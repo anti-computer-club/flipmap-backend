@@ -1,10 +1,15 @@
 //! Wraps [reqwest] to make external API calls to OpenRouteService and Komoot easier.
 //! *Not a stable API.*
 use std::env;
+use std::str::FromStr;
 use std::time::Duration;
 use serde::Serialize;
 
 use crate::consts;
+use crate::error::RouteError;
+
+// We may get Serde or Reqwest errors
+type Result<T> = std::result::Result<T, RouteError>;
 
 // TODO: Constructor for both these maybe
 /// Serializable payload for OpenRouteService routing v2 requests.
@@ -87,14 +92,38 @@ impl ExternalRequester {
             .json(req)
     }
 
+    /// Hard-coded request to Komoot's main geocoding endpoint. Will yield geojson.
+    pub fn photon(&self, req: &PhotonGeocodeRequest) -> reqwest::RequestBuilder {
+        self.client.get("https://photon.komoot.io/api/").query(req)
+    }
+
     /// Hard-coded request to Komoot's reverse geocoding endpoint. Will yield geojson.
     pub fn photon_reverse(&self, coord: PhotonRevGeocodeRequest) -> reqwest::RequestBuilder {
         let q = [("lon",coord.lon),("lat",coord.lat)];
         self.client.get("https://photon.komoot.io/reverse").query(&q)
     }
 
-    /// Hard-coded request to Komoot's main geocoding endpoint. Will yield geojson.
-    pub fn photon(&self, req: &PhotonGeocodeRequest) -> reqwest::RequestBuilder {
-        self.client.get("https://photon.komoot.io/api/").query(req)
+    // The API request OR the deserialization may throw reqwest:Errors that get converted to ours 
+
+    pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
+        let res = self.client.post("https://api.openrouteservice.org/v2/directions/driving-car/geojson")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", &self.open_route_service_key)
+                    .json(req).send().await?;
+        let obj = res.json::<geojson::FeatureCollection>().await?;
+        Ok(obj)
+    }
+
+    pub async fn photon_reverse_send(&self, coord: PhotonRevGeocodeRequest) -> Result<geojson::FeatureCollection> {
+        let q = [("lon",coord.lon),("lat",coord.lat)];
+        let res = self.client.get("https://photon.komoot.io/reverse").query(&q).send().await?;
+        let obj = res.json::<geojson::FeatureCollection>().await?;
+        Ok(obj)
+    }
+
+    pub async fn photon_send(&self, req: &PhotonGeocodeRequest) -> Result<geojson::FeatureCollection> {
+        let res = self.client.get("https://photon.komoot.io/api/").query(req).send().await?;
+        let obj = res.json::<geojson::FeatureCollection>().await?;
+        Ok(obj)
     }
 }
