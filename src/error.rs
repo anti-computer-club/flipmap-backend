@@ -10,18 +10,15 @@ use axum::{
 };
 use serde::Serialize;
 
-/*
-pub struct RouteError {
-    kind: Kind,
-    source: Option<Box<dyn std::error::Error + Send + Sync>>,
-}
-*/
-
+/// All expectable errors. Internal tuple values represent information that's safe to send in
+/// response. Most relevant information should be traced rather than placed inside.
 pub enum RouteError {
+    /// Produced by [axum::Json] when it doesn't like the request. Includes error.
     BadRequestJson(Box<JsonRejection>),
-    // TODO: See if we need this saved info at all actually
-    ExternalAPIParse(String),
-    ExternalAPIRequest(Box<reqwest::Error>),
+    /// Produced when unexpected data is processed (or not) from external APIs: Photon or ORS
+    ExternalAPIParse,
+    /// Produced when a Photon or ORS request fails entirely in [crate::ExternalRequester]
+    ExternalAPIRequest, //TODO: Distinguish when reqwest fails to deserialize (via serde)!
 }
 
 impl IntoResponse for RouteError {
@@ -33,12 +30,12 @@ impl IntoResponse for RouteError {
         let (status, message) = match self {
             // The user sent this info, so it should be safe to pass the full error back
             RouteError::BadRequestJson(err) => (err.status(), err.body_text()),
-            RouteError::ExternalAPIParse(_) => (
+            RouteError::ExternalAPIParse => (
                 // Purposely vague. Pretty sure it should be 500 because we're not a gateway?
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "problem parsing external API response".to_owned(),
             ),
-            RouteError::ExternalAPIRequest(_) => (
+            RouteError::ExternalAPIRequest => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "problem making call to external API".to_owned(),
             ),
@@ -50,16 +47,14 @@ impl IntoResponse for RouteError {
 impl RouteError {
     pub fn new_external_parse_failure(msg: String) -> Self {
         tracing::error!("external API parse error: {}", msg);
-        RouteError::ExternalAPIParse(msg)
+        RouteError::ExternalAPIParse
     }
 }
 
-// TODO: Distinguish between errors connecting and errors in JSON response which we reqwest tries
-// to deserialize
 impl From<reqwest::Error> for RouteError {
     fn from(err: reqwest::Error) -> Self {
         tracing::error!("external API call error: {}", err);
-        RouteError::ExternalAPIRequest(Box::new(err))
+        RouteError::ExternalAPIRequest
     }
 }
 
