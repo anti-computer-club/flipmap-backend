@@ -1,5 +1,4 @@
-use axum::routing::Route;
-use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use axum::{response::IntoResponse, routing::post, Router};
 use geojson::Position;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -10,7 +9,7 @@ mod requester;
 
 use crate::error::RouteError;
 use crate::requester::{ExternalRequester, OpenRouteRequest, PhotonGeocodeRequest};
-use axum::extract::{rejection::JsonRejection, FromRequest, State};
+use axum::extract::{FromRequest, State};
 use axum::response::Response;
 
 type Result<T> = std::result::Result<T, RouteError>;
@@ -85,7 +84,7 @@ async fn route(
     }
     */
 
-    // First request to know where to ask for the route's end waypoint
+    // First request to know where to ask for the route's end waypointj
     let req = PhotonGeocodeRequest {
         lat: Some(params.lat),
         lon: Some(params.lon),
@@ -94,11 +93,22 @@ async fn route(
     };
     dbg!(&req); //TODO: Replace all this with a proper trace layer
     let features = client.photon_send(&req).await?;
-    // TODO: Remove possible parse panics
     // All we want is the coordinates of the point. FeatureCollection -> Feature -> Point
-    let end_coord: Position = match &features.features[0].geometry.as_ref().unwrap().value {
+    // Failing to find a geometry, or a point in the geometry is an error
+    // ASSUMPTION: geojson will fail to parse if the FeatureCollection has no Feature
+    let geometry = features.features[0].geometry.as_ref().ok_or_else(|| {
+        RouteError::new_external_parse_failure(
+            "failed to find geometry in Photon response".to_owned(),
+        )
+    })?;
+    let end_coord: Position = match &geometry.value {
         geojson::Value::Point(x) => x.clone(),
-        _ => panic!("Got non-position geometry value from Photon"),
+        v => {
+            return Err(RouteError::new_external_parse_failure(format!(
+                "found {} geojson datatype instead of Point in Photon response geometry",
+                v.type_name()
+            )))
+        }
     };
 
     // Second request to actually get the route
@@ -110,10 +120,19 @@ async fn route(
     dbg!(&req);
     let features = client.ors_send(&req).await?;
     // Grab the LineString from the ORS route, then remove interior arrays to make app processing easier
-    // TODO: Remove possible parse panics
-    let route: Vec<f64> = match &features.features[0].geometry.as_ref().unwrap().value {
+    let geometry = features.features[0].geometry.as_ref().ok_or_else(|| {
+        RouteError::new_external_parse_failure(
+            "failed to find geometry in Photon response".to_owned(),
+        )
+    })?;
+    let route: Vec<f64> = match &geometry.value {
         geojson::Value::LineString(x) => x.clone(),
-        _ => panic!("Got non-linestring geometry value from ORS"),
+        v => {
+            return Err(RouteError::new_external_parse_failure(format!(
+                "found {} geojson datatype instead of LineString in ORS response geometry",
+                v.type_name()
+            )))
+        }
     }
     .into_iter()
     .flatten()
