@@ -19,7 +19,7 @@ pub struct RouteError {
 
 pub enum RouteError {
     BadRequestJson(Box<JsonRejection>),
-    // TODO: See if we need to actually capture a string here or we can trace state outside
+    // TODO: See if we need this saved info at all actually
     ExternalAPIParse(String),
     ExternalAPIRequest(Box<reqwest::Error>),
 }
@@ -38,9 +38,10 @@ impl IntoResponse for RouteError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "problem parsing external API response".to_owned(),
             ),
-            RouteError::ExternalAPIRequest(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "OOPS!".to_owned())
-            }
+            RouteError::ExternalAPIRequest(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "problem making call to external API".to_owned(),
+            ),
         };
         (status, Json(ErrorResponse { message })).into_response()
     }
@@ -48,19 +49,24 @@ impl IntoResponse for RouteError {
 
 impl RouteError {
     pub fn new_external_parse_failure(msg: String) -> Self {
+        tracing::error!("external API parse error: {}", msg);
         RouteError::ExternalAPIParse(msg)
     }
 }
 
-// TODO: Decide where to tracepoint, probably here. Also, distinguish parse problems
+// TODO: Distinguish between errors connecting and errors in JSON response which we reqwest tries
+// to deserialize
 impl From<reqwest::Error> for RouteError {
     fn from(err: reqwest::Error) -> Self {
+        tracing::error!("external API call error: {}", err);
         RouteError::ExternalAPIRequest(Box::new(err))
     }
 }
 
 impl From<axum::extract::rejection::JsonRejection> for RouteError {
     fn from(rejection: JsonRejection) -> Self {
+        // Not necessarily that important
+        tracing::warn!("rejected route JSON: {}", rejection);
         RouteError::BadRequestJson(Box::new(rejection))
     }
 }

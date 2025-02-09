@@ -1,10 +1,10 @@
 //! Wraps [reqwest] to make external API calls to OpenRouteService and Komoot easier.
 //! *Not a stable API.*
 use std::env;
-use std::str::FromStr;
 use std::time::Duration;
 use serde::Serialize;
-
+use secrecy::{ExposeSecret, SecretString};
+use tracing::instrument;
 use crate::consts;
 use crate::error::RouteError;
 
@@ -40,7 +40,7 @@ pub struct PhotonGeocodeRequest {
 /// Serializable payload for Photon reverse-geocoding requests (hosted by Komoot)
 ///
 /// See the [Komoot documentation](https://photon.komoot.io/) for more.
-#[derive(Serialize)]
+#[derive(Serialize,Debug)]
 pub struct PhotonRevGeocodeRequest {
     pub lat: f64,
     pub lon: f64,
@@ -51,11 +51,12 @@ pub struct PhotonRevGeocodeRequest {
 ///
 /// Nothing in this struct actually makes web requests. The yielded [reqwest::RequestBuilder](s) must
 /// still be sent, awaited, and checked for errors elsewhere.
+#[derive(Debug)]
 pub struct ExternalRequester {
     /// Wrapped client. Will be created for you, against your will. You're welcome.
     client: reqwest::Client,
-    /// Required to make ORS calls.
-    open_route_service_key: String,
+    // Shouldn't leak to logs unless Reqwest traces headers? Won't get sent over wire in response either way
+    open_route_service_key: SecretString,
     // We also use Photon (via Komoot) but it has an unauthenticated API
 }
 
@@ -80,40 +81,43 @@ impl ExternalRequester {
                 // TODO: Allow reading from a file too and other such logic
                 env::var("ORS_API_KEY")
                     .expect("Place an Open Route Service API key in ORS_API_KEY env variable!")
-                    .to_string(),
+                    .to_string().into(),
     }
 }
-    // TODO: Re-evaluate if these are useful here. They just make futures
     /// Hard-coded request to OpenRouteService v2 directions endpoint. Will yield geojson.
+    #[instrument(skip(self))]
     pub fn ors(&self, req: &OpenRouteRequest) -> reqwest::RequestBuilder {
         self.client.post("https://api.openrouteservice.org/v2/directions/driving-car/geojson")
             .header("Content-Type", "application/json")
-            .header("Authorization", &self.open_route_service_key)
+            .header("Authorization", self.open_route_service_key.expose_secret())
             .json(req)
     }
 
     /// Hard-coded request to Komoot's main geocoding endpoint. Will yield geojson.
+    #[instrument(skip(self))]
     pub fn photon(&self, req: &PhotonGeocodeRequest) -> reqwest::RequestBuilder {
         self.client.get("https://photon.komoot.io/api/").query(req)
     }
 
     /// Hard-coded request to Komoot's reverse geocoding endpoint. Will yield geojson.
+    #[instrument(skip(self))]
     pub fn photon_reverse(&self, coord: PhotonRevGeocodeRequest) -> reqwest::RequestBuilder {
         let q = [("lon",coord.lon),("lat",coord.lat)];
         self.client.get("https://photon.komoot.io/reverse").query(&q)
     }
 
     // The API request OR the deserialization may throw reqwest:Errors that get converted to ours 
-
+    #[instrument(skip(self))]
     pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
         let res = self.client.post("https://api.openrouteservice.org/v2/directions/driving-car/geojson")
                     .header("Content-Type", "application/json")
-                    .header("Authorization", &self.open_route_service_key)
+                    .header("Authorization", self.open_route_service_key.expose_secret())
                     .json(req).send().await?;
         let obj = res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
     }
 
+    #[instrument(skip(self))]
     pub async fn photon_reverse_send(&self, coord: PhotonRevGeocodeRequest) -> Result<geojson::FeatureCollection> {
         let q = [("lon",coord.lon),("lat",coord.lat)];
         let res = self.client.get("https://photon.komoot.io/reverse").query(&q).send().await?;
@@ -121,6 +125,7 @@ impl ExternalRequester {
         Ok(obj)
     }
 
+    #[instrument(skip(self))]
     pub async fn photon_send(&self, req: &PhotonGeocodeRequest) -> Result<geojson::FeatureCollection> {
         let res = self.client.get("https://photon.komoot.io/api/").query(req).send().await?;
         let obj = res.json::<geojson::FeatureCollection>().await?;
