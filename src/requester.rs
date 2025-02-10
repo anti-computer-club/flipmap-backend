@@ -6,11 +6,7 @@ use serde::Serialize;
 use secrecy::{ExposeSecret, SecretString};
 use tracing::instrument;
 use crate::consts;
-use crate::error::RouteError;
-
-// We may get Serde or Reqwest errors
-type Result<T> = std::result::Result<T, RouteError>;
-
+use crate::Result;
 // TODO: Constructor for both these maybe
 /// Serializable payload for OpenRouteService routing v2 requests.
 ///
@@ -46,11 +42,8 @@ pub struct PhotonRevGeocodeRequest {
     pub lon: f64,
 }
 
-/// Wraps [reqwest::Client] to provide opinionated initialization and [reqwest:RequestBuilder] for
-/// API calls.
-///
-/// Nothing in this struct actually makes web requests. The yielded [reqwest::RequestBuilder](s) must
-/// still be sent, awaited, and checked for errors elsewhere.
+/// Wraps [reqwest::Client] to provide opinionated [reqwest::RequestBuilder] preparation (probably
+/// don't) or execution and parsing of external API endpoints.
 #[derive(Debug)]
 pub struct ExternalRequester {
     /// Wrapped client. Will be created for you, against your will. You're welcome.
@@ -84,7 +77,8 @@ impl ExternalRequester {
                     .to_string().into(),
     }
 }
-    /// Hard-coded request to OpenRouteService v2 directions endpoint. Will yield geojson.
+    /// Prepare a request (builder) to OpenRouteService v2 directions endpoint. Will yield geojson.
+    #[deprecated(note="use _send methods for error handling and simpler logic")]
     #[instrument(skip(self))]
     pub fn ors(&self, req: &OpenRouteRequest) -> reqwest::RequestBuilder {
         self.client.post("https://api.openrouteservice.org/v2/directions/driving-car/geojson")
@@ -93,20 +87,28 @@ impl ExternalRequester {
             .json(req)
     }
 
-    /// Hard-coded request to Komoot's main geocoding endpoint. Will yield geojson.
+    /// Prepare a request (builder) to Komoot's main geocoding endpoint. Will yield geojson.
+    #[deprecated(note="use _send methods for error handling and simpler logic")]
     #[instrument(skip(self))]
     pub fn photon(&self, req: &PhotonGeocodeRequest) -> reqwest::RequestBuilder {
         self.client.get("https://photon.komoot.io/api/").query(req)
     }
 
-    /// Hard-coded request to Komoot's reverse geocoding endpoint. Will yield geojson.
+    /// Prepare a request (builder) to Komoot's reverse geocoding endpoint. Will yield geojson.
+    #[deprecated(note="use _send methods for error handling and simpler logic")]
     #[instrument(skip(self))]
     pub fn photon_reverse(&self, coord: PhotonRevGeocodeRequest) -> reqwest::RequestBuilder {
         let q = [("lon",coord.lon),("lat",coord.lat)];
         self.client.get("https://photon.komoot.io/reverse").query(&q)
     }
 
-    // The API request OR the deserialization may throw reqwest:Errors that get converted to ours 
+    /// Prepare *and execute* a request to OpenRouteService v2 directions endpoint.
+    ///
+    /// # Errors 
+    /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
+    /// 
+    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
         let res = self.client.post("https://api.openrouteservice.org/v2/directions/driving-car/geojson")
@@ -117,6 +119,13 @@ impl ExternalRequester {
         Ok(obj)
     }
 
+    /// Prepare *and execute* a request to Photon's reverse geocoding endpoint.
+    ///
+    /// # Errors 
+    /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
+    /// 
+    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn photon_reverse_send(&self, coord: PhotonRevGeocodeRequest) -> Result<geojson::FeatureCollection> {
         let q = [("lon",coord.lon),("lat",coord.lat)];
@@ -125,6 +134,13 @@ impl ExternalRequester {
         Ok(obj)
     }
 
+    /// Prepare *and execute* a request to Photon's geocoding endpoint.
+    ///
+    /// # Errors 
+    /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
+    /// 
+    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn photon_send(&self, req: &PhotonGeocodeRequest) -> Result<geojson::FeatureCollection> {
         let res = self.client.get("https://photon.komoot.io/api/").query(req).send().await?;
