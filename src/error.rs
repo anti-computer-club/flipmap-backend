@@ -9,15 +9,19 @@ use axum::{
     Json,
 };
 use serde::Serialize;
+use validator::ValidationErrors;
 
 /// All expectable errors. Internal tuple values represent information that's safe to send in
 /// response. Most relevant information should be traced rather than placed inside.
 pub enum RouteError {
-    /// Produced by [axum::Json] when it doesn't like the request. Includes error.
+    /// HTTP 422(always?): Produced by [axum::Json] when it doesn't like the request. Includes error.
     BadRequestJson(Box<JsonRejection>),
-    /// Produced when unexpected data is processed (or not) from external APIs: Photon or ORS
+    /// HTTP 422: Produced by [validator::Validate] when the response can be deserialized, but isn't O.K
+    /// semantically (example: lat/lon is a float, but out of bounds)
+    BadRequestConstraint(Box<ValidationErrors>),
+    /// HTTP 500: Produced when unexpected data is processed (or not) from external APIs: Photon or ORS
     ExternalAPIParse,
-    /// Produced when a Photon or ORS request fails entirely in [crate::ExternalRequester]
+    /// HTTP 500: Produced when a Photon or ORS request fails entirely in [crate::ExternalRequester]
     ExternalAPIRequest, //TODO: Distinguish when reqwest fails to deserialize (via serde)!
 }
 
@@ -28,8 +32,12 @@ impl IntoResponse for RouteError {
             message: String,
         }
         let (status, message) = match self {
-            // The user sent this info, so it should be safe to pass the full error back
+            // User sent this info, so it should be safe to pass the full error back w/ req-errors
             RouteError::BadRequestJson(err) => (err.status(), err.body_text()),
+            RouteError::BadRequestConstraint(err) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("good json, bad request semantics: {}", err),
+            ),
             RouteError::ExternalAPIParse => (
                 // Purposely vague. Pretty sure it should be 500 because we're not a gateway?
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -63,6 +71,15 @@ impl From<axum::extract::rejection::JsonRejection> for RouteError {
         // Not necessarily that important
         tracing::warn!("rejected route JSON: {}", rejection);
         RouteError::BadRequestJson(Box::new(rejection))
+    }
+}
+
+impl From<validator::ValidationErrors> for RouteError {
+    fn from(rejections: ValidationErrors) -> Self {
+        //Validator fails slow and may return /many/ errors in this wacky struct
+        //hopefully just printing it is enough info
+        tracing::warn!("rejected route JSON after deserializing: {}", rejections);
+        RouteError::BadRequestConstraint(Box::new(rejections))
     }
 }
 

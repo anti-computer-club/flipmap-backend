@@ -1,16 +1,17 @@
 use axum::{
-    extract::{FromRequest, State},
+    extract::{rejection::JsonRejection, FromRequest, State},
     response::{IntoResponse, Response},
     routing::post,
     Router,
 };
 use geojson::Position;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
+use validator::Validate;
 
 mod consts;
 mod error;
@@ -18,22 +19,34 @@ mod requester;
 use crate::error::RouteError;
 use crate::requester::{ExternalRequester, OpenRouteRequest, PhotonGeocodeRequest};
 
-type Result<T> = std::result::Result<T, RouteError>;
+pub(crate) type Result<T> = std::result::Result<T, RouteError>;
 
-// Create our own JSON extractor by wrapping `axum::Json`. This makes it easy to override the
-// rejection and provide our own which formats errors to match our application.
-//
-// `axum::Json` responds with plain text if the input is invalid.
-#[derive(FromRequest)]
-#[from_request(via(axum::Json), rejection(RouteError))]
-struct AppJson<T>(T);
-impl<T> IntoResponse for AppJson<T>
+/// Wraps [axum::Json] so that we can validate requests with [validator::Validate] after
+/// deserialization. Rejection at either stage sends a response back before hitting routes
+struct ValidatedJson<T>(T);
+// Pass-through. There's no derive macro so we have to impl. Response formatting is via error
+impl<T> IntoResponse for ValidatedJson<T>
 where
     axum::Json<T>: IntoResponse,
 {
     fn into_response(self) -> Response {
-        //TODO: Customize as needed for errors
         axum::Json(self.0).into_response()
+    }
+}
+impl<T, S> FromRequest<S> for ValidatedJson<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+    axum::Json<T>: FromRequest<S, Rejection = JsonRejection>,
+{
+    type Rejection = RouteError; // Why is this required? Compiler made me. 'ate generics.
+    async fn from_request(
+        req: axum::extract::Request,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let axum::Json(data) = axum::Json::<T>::from_request(req, state).await?;
+        data.validate()?;
+        Ok(ValidatedJson(data))
     }
 }
 
@@ -80,9 +93,11 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Validate)]
 pub struct RouteRequest {
+    #[validate(range(min=-90.0, max=90.0))]
     pub lat: f64,
+    #[validate(range(min=-180.0, max=180.0))]
     pub lon: f64,
     pub query: String,
 }
@@ -96,22 +111,8 @@ pub struct RouteResponse {
 #[instrument(level = "debug", skip(client))]
 async fn route(
     State(client): State<Arc<ExternalRequester>>,
-    AppJson(params): AppJson<RouteRequest>,
-) -> Result<AppJson<RouteResponse>> {
-    /*
-    // Photon will also do this (and identify the wrong param) but let's fail fast
-    // TODO: May or may not be preferable to do this during deserialization??
-    if (params.lat < -90.0 || params.lat > 90.0) || (params.lon < -180.0 && params.lon > 180.0) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(RouteResponse {
-                route: None,
-                errmsg: Some("AHHH!".to_owned()),
-            }),
-        );
-    }
-    */
-
+    ValidatedJson(params): ValidatedJson<RouteRequest>,
+) -> Result<ValidatedJson<RouteResponse>> {
     // First request to know where to ask for the route's end waypointj
     let req = PhotonGeocodeRequest {
         lat: Some(params.lat),
@@ -163,5 +164,5 @@ async fn route(
     .into_iter()
     .flatten()
     .collect();
-    Ok(AppJson(RouteResponse { route }))
+    Ok(ValidatedJson(RouteResponse { route }))
 }
