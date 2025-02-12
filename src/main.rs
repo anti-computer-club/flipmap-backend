@@ -5,6 +5,7 @@ use axum::{
     Router,
 };
 use geojson::Position;
+use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
@@ -52,8 +53,53 @@ where
 
 #[tokio::main]
 async fn main() {
-    // Re-used Reqwest client for external API calls
-    let client = Arc::new(ExternalRequester::new());
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 || args.len() > 7 {
+        eprintln!(
+            "Usage: {} <IP> <PORT> [-o <ORS_URL>] [-p <PHOTON_URL>]",
+            args[0]
+        );
+        std::process::exit(1);
+    }
+    let ip = &args[1];
+    let port = &args[2];
+
+    // Not a very robust way to parse flags, but importing CLAP for this feels silly?
+    // Start with default URLs and then over-write them with whatever is passed after the flag
+    const PHOTON_DEFAULT: &str = "https://photon.komoot.io";
+    const ORS_DEFAULT: &str = "https://api.openrouteservice.org";
+    let mut photon_base: Option<&str> = None;
+    let mut ors_base: Option<&str> = None;
+    if args.len() > 3 {
+        args[3..]
+            .chunks_exact(2)
+            .for_each(|args| match args[0].as_str() {
+                "-o" => ors_base = Some(args[1].as_str()),
+                "-p" => photon_base = Some(args[1].as_str()),
+                _ => eprintln!(
+                    "unexpected flag or out-of-order argument: {} & {}",
+                    args[0], args[1]
+                ),
+            });
+    }
+    let photon_base = Url::parse(photon_base.unwrap_or(PHOTON_DEFAULT)).unwrap_or_else(|e| {
+        panic!(
+            "couldn't parse photon base API URL: {:?}\n default for reference: {}",
+            e, PHOTON_DEFAULT
+        )
+    });
+    let ors_base = Url::parse(ors_base.unwrap_or(ORS_DEFAULT)).unwrap_or_else(|e| {
+        panic!(
+            "couldn't parse openrouteservice base API URL: {:?}\n default for reference: {}",
+            e, ORS_DEFAULT
+        )
+    });
+
+    // TODO: Allow reading from a file too and other such logic
+    let ors_key: secrecy::SecretString = env::var("ORS_API_KEY")
+        .expect("Place an Open Route Service API key in ORS_API_KEY env variable!")
+        .to_string()
+        .into();
 
     tracing_subscriber::registry()
         .with(
@@ -73,23 +119,19 @@ async fn main() {
         )
         .init();
 
+    // Re-used Reqwest client for external API calls
+    let client = Arc::new(ExternalRequester::new(ors_base, photon_base, ors_key));
+    tracing::trace!("created reqwest client: {:?}", &client);
+
     let app: Router = Router::new()
         .route("/route", post(route))
         .with_state(client)
         .layer(TraceLayer::new_for_http());
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <IP> <PORT>", args[0]);
-        std::process::exit(1);
-    }
-    let ip = &args[1];
-    let port = &args[2];
-
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", ip, port))
         .await
         .unwrap();
-    tracing::info!("Starting server on {}:{}", ip, port);
+    tracing::info!("starting server on {}:{}", ip, port);
     axum::serve(listener, app).await.unwrap();
 }
 
