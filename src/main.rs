@@ -4,8 +4,9 @@ use axum::{
     routing::post,
     Router,
 };
+use clap::Parser;
+use core::net;
 use geojson::Position;
-use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
@@ -51,56 +52,22 @@ where
     }
 }
 
+#[derive(clap::Parser, Debug)]
+struct Opt {
+    // Tried to make these compile-time dynamic to crate name. Seems impossible w/ stdlib
+    #[arg(env = "HELLO_OSM_IP", value_parser = clap::value_parser!(net::IpAddr))]
+    ip: net::IpAddr,
+    #[arg(env = "HELLO_OSM_PORT", value_parser = clap::value_parser!(u16).range(1..=65535))]
+    port: u16,
+    #[arg(short,long, value_parser = clap::value_parser!(reqwest::Url), default_value = "https://api.openrouteservice.org")]
+    ors_base: reqwest::Url,
+    #[arg(short, long, value_parser = clap::value_parser!(reqwest::Url), default_value = "https://photon.komoot.io")]
+    photon_base: reqwest::Url,
+    // I'd put the API key here but clap purposely seems to deny the ability to ONLY allow w/ env
+}
+
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 3 || args.len() > 7 {
-        eprintln!(
-            "Usage: {} <IP> <PORT> [-o <ORS_URL>] [-p <PHOTON_URL>]",
-            args[0]
-        );
-        std::process::exit(1);
-    }
-    let ip = &args[1];
-    let port = &args[2];
-
-    // Not a very robust way to parse flags, but importing CLAP for this feels silly?
-    // Start with default URLs and then over-write them with whatever is passed after the flag
-    const PHOTON_DEFAULT: &str = "https://photon.komoot.io";
-    const ORS_DEFAULT: &str = "https://api.openrouteservice.org";
-    let mut photon_base: Option<&str> = None;
-    let mut ors_base: Option<&str> = None;
-    if args.len() > 3 {
-        args[3..]
-            .chunks_exact(2)
-            .for_each(|args| match args[0].as_str() {
-                "-o" => ors_base = Some(args[1].as_str()),
-                "-p" => photon_base = Some(args[1].as_str()),
-                _ => eprintln!(
-                    "unexpected flag or out-of-order argument: {} & {}",
-                    args[0], args[1]
-                ),
-            });
-    }
-    let photon_base = Url::parse(photon_base.unwrap_or(PHOTON_DEFAULT)).unwrap_or_else(|e| {
-        panic!(
-            "couldn't parse photon base API URL: {:?}\n default for reference: {}",
-            e, PHOTON_DEFAULT
-        )
-    });
-    let ors_base = Url::parse(ors_base.unwrap_or(ORS_DEFAULT)).unwrap_or_else(|e| {
-        panic!(
-            "couldn't parse openrouteservice base API URL: {:?}\n default for reference: {}",
-            e, ORS_DEFAULT
-        )
-    });
-
-    // TODO: Allow reading from a file too and other such logic
-    let ors_key: secrecy::SecretString = env::var("ORS_API_KEY")
-        .expect("Place an Open Route Service API key in ORS_API_KEY env variable!")
-        .to_string()
-        .into();
-
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -119,8 +86,20 @@ async fn main() {
         )
         .init();
 
+    let ors_key: secrecy::SecretString = env::var("ORS_API_KEY")
+        .expect("Place an Open Route Service API key in ORS_API_KEY env variable!")
+        .to_string()
+        .into();
+
+    let opts = Opt::parse();
+    tracing::trace!("parsed args: {:?}", &opts);
+
     // Re-used Reqwest client for external API calls
-    let client = Arc::new(ExternalRequester::new(ors_base, photon_base, ors_key));
+    let client = Arc::new(ExternalRequester::new(
+        opts.ors_base,
+        opts.photon_base,
+        ors_key,
+    ));
     tracing::trace!("created reqwest client: {:?}", &client);
 
     let app: Router = Router::new()
@@ -128,10 +107,10 @@ async fn main() {
         .with_state(client)
         .layer(TraceLayer::new_for_http());
 
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", ip, port))
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", opts.ip, opts.port))
         .await
         .unwrap();
-    tracing::info!("starting server on {}:{}", ip, port);
+    tracing::info!("starting server on {}:{}", opts.ip, opts.port);
     axum::serve(listener, app).await.unwrap();
 }
 
