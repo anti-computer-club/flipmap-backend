@@ -4,29 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bytemuck = { version = "1.21.0", features = [ "derive" ] }
-cfg-if = "1.0.0"
-env_logger = "0.11.6"
-error-chain = "0.12.4"
-geo = {version = "0.29.3", features = [ "use-serde" ]}
+# Web & Async I/O framework
+axum = { version = "0.8.1", features = ["macros", "tracing"] }
+tokio = { version = "1.43.0", features = ["full"] }
+# Calls external APIs
+reqwest = { version = "0.12.12", features = ["json"] }
+# External APIs all speak this, but we don't send it to our client
 geojson = "0.24.1"
-log = "0.4.22"
-pollster = "0.4.0"
-reqwest = {version = "0.12.12", features = ["blocking"] }
+# Redacts sensitive data from debug. Also does memory stuff irrelevant to us
+secrecy = "0.10.3"
+# Deserializes requests and serializes responses
 serde = "1.0.217"
 serde_json = "1.0.134"
-tokio = "1.43.0"
-wgpu = "23.0.1"
-winit = { version = "0.29", features = ["rwh_05"] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1.6"
-console_log = "1.0"
-wgpu = { version = "22.0", features = ["webgl"]}
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4.30"
-web-sys = { version = "0.3", features = [
-    "Document",
-    "Window",
-    "Element",
-]}
+tower-http = { version = "0.6.2", features = ["trace"] }
+# Logging but better
+tracing = { version = "0.1.41", features = ["attributes"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+# Makes it easy to add constraints to requests
+validator = { version = "0.20.0", features = ["derive"] }
+clap = { version = "4.5.29", features = ["derive", "env"] }
