@@ -78,7 +78,7 @@ impl ExternalRequester {
                 .timeout(Duration::from_secs(10))
                 .https_only(true)
                 .build()
-                .expect("req client construction failed"),
+                .unwrap_or_else(|e| panic!("errored building request: {:?}", e)),
             open_route_service_key,
             ors_directions: ors_base
                 .join(ORS_DIRECTIONS_PATH)
