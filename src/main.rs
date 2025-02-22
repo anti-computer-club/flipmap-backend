@@ -137,13 +137,8 @@ async fn route(
     State(client): State<Arc<ExternalRequester>>,
     ValidatedJson(params): ValidatedJson<RouteRequest>,
 ) -> Result<ValidatedJson<RouteResponse>> {
-    // First request to know where to ask for the route's end waypointj
-    let req = PhotonGeocodeRequest {
-        lat: Some(params.lat),
-        lon: Some(params.lon),
-        limit: 1,
-        query: params.query,
-    };
+    // First request to know where to ask for the route's end waypoint
+    let req = PhotonGeocodeRequest::new(1, params.query).with_location_bias(params.lat, params.lon);
     let features = client.photon_send(&req).await?;
     // All we want is the coordinates of the point. FeatureCollection -> Feature -> Point
     // Failing to find a geometry, or a point in the geometry is an error
