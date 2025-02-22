@@ -52,6 +52,7 @@ where
     }
 }
 
+/// Arguments as parsed by [clap]. Not used outside [main].
 #[derive(clap::Parser, Debug)]
 struct Opt {
     // Tried to make these compile-time dynamic to crate name. Seems impossible w/ stdlib
@@ -114,6 +115,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Extracted by [ValidatedJson] after succesful deserialization & validation
 #[derive(Deserialize, Debug, Validate)]
 pub struct RouteRequest {
     #[validate(range(min=-90.0, max=90.0))]
@@ -129,6 +131,7 @@ pub struct RouteResponse {
     pub route: Vec<f64>,
 }
 
+/// Proof-of-concept route that turns anchor locations + query into routes.
 #[instrument(level = "debug", skip(client))]
 async fn route(
     State(client): State<Arc<ExternalRequester>>,

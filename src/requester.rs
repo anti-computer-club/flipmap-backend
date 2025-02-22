@@ -122,7 +122,7 @@ impl ExternalRequester {
     /// # Errors
     /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
     ///
-    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [ExternalAPIJson][crate::error::RouteError::ExternalAPIJson]: if [reqwest] tries to use [serde] to deserialize into
     /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
@@ -143,7 +143,7 @@ impl ExternalRequester {
     /// # Errors
     /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
     ///
-    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [ExternalAPIJson][crate::error::RouteError::ExternalAPIJson]: if [reqwest] tries to use [serde] to deserialize into
     /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn photon_reverse_send(
@@ -166,7 +166,7 @@ impl ExternalRequester {
     /// # Errors
     /// [ExternalAPIRequest][crate::error::RouteError::ExternalAPIRequest]: if [reqwest] fails for network reasons
     ///
-    /// [ExternalAPIParse][crate::error::RouteError::ExternalAPIParse]: if [reqwest] tries to use [serde] to deserialize into
+    /// [ExternalAPIJson][crate::error::RouteError::ExternalAPIJson]: if [reqwest] tries to use [serde] to deserialize into
     /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn photon_send(
