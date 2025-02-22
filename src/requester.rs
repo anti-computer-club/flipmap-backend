@@ -1,12 +1,15 @@
 //! Wraps [reqwest] to make external API calls to OpenRouteService and Komoot easier.
 //! *Not a stable API.*
-use crate::consts;
 use crate::Result;
 use reqwest::Url;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use std::time::Duration;
 use tracing::instrument;
+
+/// Sent over the wire when [ExternalRequester] makes requests.
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"),);
+
 /// Serializable payload for OpenRouteService routing v2 requests.
 ///
 /// **Very unstable.** Implements a tiny subset of options that are immediately useful to the program.
@@ -104,7 +107,7 @@ impl ExternalRequester {
         const PHOTON_REVERSE_PATH: &str = "/reverse";
         ExternalRequester {
             client: reqwest::Client::builder()
-                .user_agent(consts::USER_AGENT)
+                .user_agent(USER_AGENT)
                 .timeout(Duration::from_secs(10))
                 .https_only(true)
                 .build()

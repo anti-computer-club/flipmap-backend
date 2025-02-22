@@ -15,7 +15,6 @@ use tracing::instrument;
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
 use validator::Validate;
 
-mod consts;
 mod error;
 mod requester;
 use crate::error::RouteError;
