@@ -23,4 +23,4 @@ jobs:
             cd /srv/flipmap-backend
             git pull origin main
             docker build -t flipmap-backend .
-            docker run --env-file /srv/flipmap-backend/.env -d flipmap-api
+            docker run -p 80:80 --env-file /srv/flipmap-backend/.env -d flipmap-backend
