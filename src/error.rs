@@ -21,8 +21,8 @@ pub enum RouteError {
     RequestConstraint(Box<ValidationErrors>),
     /// HTTP 500: Produced when [serde] (via [reqwest::Response::json]) fails to deserialize an external API response body
     ExternalAPIJson,
-    // HTTP 500: Produced when the external API is deserialized, but lacks content or has unexpected
-    // content that disrupts processing afterwards
+    /// HTTP 500: Produced when the external API is deserialized, but lacks content or has unexpected
+    /// content that disrupts processing afterwards.
     ExternalAPIContent,
     /// HTTP 500: Produced when a Photon or ORS request fails entirely in [crate::ExternalRequester]
     ExternalAPIRequest,

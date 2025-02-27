@@ -15,7 +15,6 @@ use tracing::instrument;
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
 use validator::Validate;
 
-mod consts;
 mod error;
 mod requester;
 use crate::error::RouteError;
@@ -52,6 +51,7 @@ where
     }
 }
 
+/// Arguments as parsed by [clap]. Not used outside [main].
 #[derive(clap::Parser, Debug)]
 struct Opt {
     // Tried to make these compile-time dynamic to crate name. Seems impossible w/ stdlib
@@ -114,6 +114,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Extracted by [ValidatedJson] after succesful deserialization & validation
 #[derive(Deserialize, Debug, Validate)]
 pub struct RouteRequest {
     #[validate(range(min=-90.0, max=90.0))]
@@ -129,18 +130,14 @@ pub struct RouteResponse {
     pub route: Vec<f64>,
 }
 
+/// Proof-of-concept route that turns anchor locations + query into routes.
 #[instrument(level = "debug", skip(client))]
 async fn route(
     State(client): State<Arc<ExternalRequester>>,
     ValidatedJson(params): ValidatedJson<RouteRequest>,
 ) -> Result<ValidatedJson<RouteResponse>> {
-    // First request to know where to ask for the route's end waypointj
-    let req = PhotonGeocodeRequest {
-        lat: Some(params.lat),
-        lon: Some(params.lon),
-        limit: 1,
-        query: params.query,
-    };
+    // First request to know where to ask for the route's end waypoint
+    let req = PhotonGeocodeRequest::new(1, params.query).with_location_bias(params.lat, params.lon);
     let features = client.photon_send(&req).await?;
     // All we want is the coordinates of the point. FeatureCollection -> Feature -> Point
     // Failing to find a geometry, or a point in the geometry is an error
