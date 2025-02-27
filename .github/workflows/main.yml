@@ -22,5 +22,7 @@ jobs:
           script: |
             cd /srv/flipmap-backend
             git pull origin main
-            docker build -t flipmap-backend .
-            docker run -p 80:80 --env-file /srv/flipmap-backend/.env -d flipmap-backend
+            docker build -f application.dockerfile -t flipmap-backend .
+            docker build -f caddy.dockerfile -t flipmap-caddy .
+            docker-compose down
+            docker-compose up

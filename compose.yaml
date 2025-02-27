@@ -1,0 +1,35 @@
+services:
+  flipmap-backend:
+    image: flipmap-backend:latest
+    environment:
+      # Expected from .env interpolation
+      ORS_API_KEY: ${ORS_API_KEY}
+      HELLO_OSM_IP: ${HELLO_OSM_IP}
+      HELLO_OSM_PORT: ${HELLO_OSM_PORT}
+    depends_on:
+      - caddy
+
+  caddy:
+    image: flipmap-caddy:latest
+    restart: unless-stopped # I trust this more than the binary
+    environment:
+      # This gets passed into the Caddyfile
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      APP_PORT: ${HELLO_OSM_PORT}
+    cap_add:
+      # Supposedly improves QUIC perf
+      - NET_ADMIN
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+
+volumes:
+  # 'Not a Cache' purging will remove certs, OCSP staples, etc
+  caddy_data:
+
+networks:
+  omega_flip:
+    enable_ipv6: true
