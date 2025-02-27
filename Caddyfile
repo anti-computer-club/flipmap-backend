@@ -23,6 +23,7 @@
 			}
 			key static
 			events 2000
+			window 1d
 		}
 	}
 
