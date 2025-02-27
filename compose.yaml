@@ -6,6 +6,8 @@ services:
       ORS_API_KEY: ${ORS_API_KEY}
       HELLO_OSM_IP: ${HELLO_OSM_IP}
       HELLO_OSM_PORT: ${HELLO_OSM_PORT}
+    networks:
+      - omega_flip
     depends_on:
       - caddy
 
@@ -16,6 +18,7 @@ services:
       # This gets passed into the Caddyfile
       SITE_ADDRESS: ${SITE_ADDRESS}
       APP_PORT: ${HELLO_OSM_PORT}
+      CADDY_ADMIN: 0.0.0.0:2019
     cap_add:
       # Supposedly improves QUIC perf
       - NET_ADMIN
@@ -23,6 +26,10 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      # This should never be exposed to the internet - but host might need it
+      - "127.0.0.1:2019:2019"
+    networks:
+      - omega_flip
     volumes:
       - caddy_data:/data
 
