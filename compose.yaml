@@ -1,5 +1,5 @@
 services:
-  flipmap-backend:
+  backend:
     image: flipmap-backend:latest
     environment:
       # Expected from .env interpolation

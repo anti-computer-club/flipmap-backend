@@ -1,4 +1,7 @@
 {$SITE_ADDRESS} {
+	log {
+		level info
+	}
 	encode zstd gzip
 
 	rate_limit {
@@ -27,7 +30,6 @@
 		}
 	}
 
-	# Should match a wildcard, temporary measure to keep dumb scans from using global rate limit unnecessarily
 	# Host references virtual address from docker-compose
-	reverse_proxy /route flipmap-backend:{$APP_PORT}
+	reverse_proxy backend:{$APP_PORT}
 }
