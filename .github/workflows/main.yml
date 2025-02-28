@@ -25,4 +25,4 @@ jobs:
             docker build -f application.dockerfile -t flipmap-backend .
             docker build -f caddy.dockerfile -t flipmap-caddy .
             docker-compose down
-            docker-compose up
+            docker-compose up -d
