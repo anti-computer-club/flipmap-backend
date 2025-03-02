@@ -8,7 +8,7 @@ edition = "2021"
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
 tokio = { version = "1.43.0", features = ["full"] }
 # Calls external APIs
-reqwest = { version = "0.12.12", features = ["json"] }
+reqwest = { version = "0.12.12", features = ["blocking", "json"] }
 # External APIs all speak this, but we don't send it to our client
 geojson = "0.24.1"
 # Redacts sensitive data from debug. Also does memory stuff irrelevant to us
@@ -23,3 +23,8 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 # Makes it easy to add constraints to requests
 validator = { version = "0.20.0", features = ["derive"] }
 clap = { version = "4.5.29", features = ["derive", "env"] }
+
+
+[dev-dependencies]
+hyper = "0.14"
+tower = { version = "0.5.2", features = ["util"] }
