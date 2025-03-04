@@ -11,18 +11,39 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: SSH to EC2 and build docker image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      - name: Build Caddy
+        run: "docker build -f caddy.dockerfile -t flipmap-caddy ."
+
+      - name: Build Backend
+        run: "docker build -f application.dockerfile -t flipmap-backend ."
+
+      - name: Archive images
+        run: "docker save flipmap-caddy:latest flipmap-backend:latest -o images.tar"
+
+      - name: Copy to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "images.tar"
+          target: "~/"
+
+      - name: SSH to EC2 and run images
         uses: appleboy/ssh-action@v0.1.5
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            docker load -i ~/images.tar
             cd /srv/flipmap-backend
-            git pull origin main
-            docker build -f application.dockerfile -t flipmap-backend .
-            docker build -f caddy.dockerfile -t flipmap-caddy .
             docker-compose down
             docker-compose up -d

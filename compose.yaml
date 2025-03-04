@@ -6,8 +6,6 @@ services:
       ORS_API_KEY: ${ORS_API_KEY}
       HELLO_OSM_IP: ${HELLO_OSM_IP}
       HELLO_OSM_PORT: ${HELLO_OSM_PORT}
-    networks:
-      - omega_flip
     depends_on:
       - caddy
 
@@ -28,15 +26,9 @@ services:
       - "443:443/udp"
       # This should never be exposed to the internet - but host might need it
       - "127.0.0.1:2019:2019"
-    networks:
-      - omega_flip
     volumes:
       - caddy_data:/data
 
 volumes:
   # 'Not a Cache' purging will remove certs, OCSP staples, etc
   caddy_data:
-
-networks:
-  omega_flip:
-    enable_ipv6: true
