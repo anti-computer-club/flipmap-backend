@@ -7,10 +7,9 @@ use axum::{
 use clap::Parser;
 use core::net;
 use geojson::Position;
-use ratelimit::RateLimit;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::env;
 use std::sync::Arc;
-use std::{env, time::Duration};
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, pause};
+use tokio::time::interval;
 
 /// Implements a simple fixed-window rate limit
 #[derive(Debug)]

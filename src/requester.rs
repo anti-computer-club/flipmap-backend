@@ -113,12 +113,13 @@ impl ExternalRequester {
         const PHOTON_REVERSE_PATH: &str = "/reverse";
 
         // Parity with OpenRouteService limits (may or may not be a good idea)
-        let photon_limits = [
+        let photon_limits = vec![
             RateLimit::new(40, Duration::from_secs(60)),
             RateLimit::new(2000, Duration::from_secs(86400)),
         ];
-        // Not sure if optimal, but point is to make it static
-        let photon_limiter = LimitChain::new_from(Box::leak(Box::new(photon_limits)));
+
+        // Not sure if optimal, but making this static here makes life way easier
+        let photon_limiter = LimitChain::new_from(Box::leak(photon_limits.into_boxed_slice()));
 
         ExternalRequester {
             client: reqwest::Client::builder()
@@ -174,6 +175,7 @@ impl ExternalRequester {
         &self,
         coord: PhotonRevGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.try_photon_limit(1)?;
         let q = [("lon", coord.lon), ("lat", coord.lat)];
         let res = self
             .client
@@ -197,6 +199,7 @@ impl ExternalRequester {
         &self,
         req: &PhotonGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.try_photon_limit(1)?;
         let res = self
             .client
             .get(self.photon.clone())
@@ -207,15 +210,15 @@ impl ExternalRequester {
         Ok(obj)
     }
 
-    //FIXME: This interface may not be viable for use inside a route
-    /// Not used internally. Should be used at the start of the route to fail faster given
-    /// knowledge of how many calls in total we'll want to make
-    pub fn try_photon_limit(&self, n: u32) -> Option<RouteError> {
+    // Originally this was intended for pub use in routes where we may know that we want more than
+    // 1 request, but that's bad ergonomics and we have no routes which even use that yet
+    /// ?-able wrapper of [LimitChain::try_consume] that lets us short-circuit to an error response
+    fn try_photon_limit(&self, n: u32) -> Result<()> {
         if self.photon_limiter.try_consume(n) {
-            None
+            Ok(())
         } else {
             //TODO: Need to pass this more context
-            Some(RouteError::new_external_api_limit_failure())
+            Err(RouteError::new_external_api_limit_failure())
         }
     }
 }
