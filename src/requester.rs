@@ -1,6 +1,10 @@
 //! Wraps [reqwest] to make external API calls to OpenRouteService and Komoot easier.
 //! *Not a stable API.*
-use crate::Result;
+use crate::{
+    error::RouteError,
+    ratelimit::{LimitChain, RateLimit},
+    Result,
+};
 use reqwest::Url;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
@@ -83,12 +87,14 @@ pub struct ExternalRequester {
     client: reqwest::Client,
     // Shouldn't leak to logs unless Reqwest traces headers? Won't get sent over wire in response either way
     open_route_service_key: SecretString,
-    // We also use Photon (via Komoot) but it has an unauthenticated API
 
     // client.post() won't take &Url but .clone() is no worse than passing &str and front-loads error checking
     ors_directions: Url,
     photon: Url,
     photon_reverse: Url,
+
+    /// They don't enforce limits so we do this to be polite
+    photon_limiter: LimitChain<'static>,
 }
 
 impl ExternalRequester {
@@ -105,6 +111,15 @@ impl ExternalRequester {
         const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
         const PHOTON_PATH: &str = "/api/";
         const PHOTON_REVERSE_PATH: &str = "/reverse";
+
+        // Parity with OpenRouteService limits (may or may not be a good idea)
+        let photon_limits = [
+            RateLimit::new(40, Duration::from_secs(60)),
+            RateLimit::new(2000, Duration::from_secs(86400)),
+        ];
+        // Not sure if optimal, but point is to make it static
+        let photon_limiter = LimitChain::new_from(Box::leak(Box::new(photon_limits)));
+
         ExternalRequester {
             client: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
@@ -122,6 +137,7 @@ impl ExternalRequester {
             photon_reverse: photon_base.join(PHOTON_REVERSE_PATH).unwrap_or_else(|e| {
                 panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
             }),
+            photon_limiter,
         }
     }
 
@@ -189,5 +205,17 @@ impl ExternalRequester {
             .await?;
         let obj = res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
+    }
+
+    //FIXME: This interface may not be viable for use inside a route
+    /// Not used internally. Should be used at the start of the route to fail faster given
+    /// knowledge of how many calls in total we'll want to make
+    pub fn try_photon_limit(&self, n: u32) -> Option<RouteError> {
+        if self.photon_limiter.try_consume(n) {
+            None
+        } else {
+            //TODO: Need to pass this more context
+            Some(RouteError::new_external_api_limit_failure())
+        }
     }
 }

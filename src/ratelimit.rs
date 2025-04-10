@@ -134,6 +134,7 @@ impl Drop for RateLimit {
 ///
 /// It is also worth noting that refresh timers for [RateLimit] are independent, which means even
 /// those with the same interval will not refresh at the same time.
+#[derive(Debug)]
 pub struct LimitChain<'a> {
     limits: Vec<&'a RateLimit>,
 }

@@ -26,6 +26,8 @@ pub enum RouteError {
     ExternalAPIContent,
     /// HTTP 500: Produced when a Photon or ORS request fails entirely in [crate::ExternalRequester]
     ExternalAPIRequest,
+    /// HTTP 503: Produced when we (maybe this client, maybe another) makes too many calls with [crate::ExternalRequester]
+    ExternalAPILimit,
 }
 
 impl IntoResponse for RouteError {
@@ -54,6 +56,11 @@ impl IntoResponse for RouteError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "problem making call to external API".to_owned(),
             ),
+            RouteError::ExternalAPILimit => (
+                //TODO: Retry-After
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server is overusing external API".to_owned(),
+            ),
         };
         (status, Json(ErrorResponse { message })).into_response()
     }
@@ -63,6 +70,12 @@ impl RouteError {
     pub fn new_external_parse_failure(msg: String) -> Self {
         tracing::error!("external API content error: {}", msg);
         RouteError::ExternalAPIContent
+    }
+
+    pub fn new_external_api_limit_failure() -> Self {
+        //TODO: Needs context and Retry-After-able duration
+        tracing::error!("external API ratelimit reached");
+        RouteError::ExternalAPILimit
     }
 }
 
