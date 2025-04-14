@@ -23,3 +23,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 # Makes it easy to add constraints to requests
 validator = { version = "0.20.0", features = ["derive"] }
 clap = { version = "4.5.29", features = ["derive", "env"] }
+# Used to make retry-after lock free
+arc-swap = "1.7.1"
+# Parses RFC 2822 date-times from Retry-After
+chrono = "0.4.38"

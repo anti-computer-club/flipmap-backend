@@ -3,12 +3,18 @@
 use crate::{
     error::RouteError,
     ratelimit::{LimitChain, RateLimit},
+    retry_after::BackerOff,
     Result,
 };
+use arc_swap::{ArcSwapAny, ArcSwapOption};
 use reqwest::Url;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
-use std::time::Duration;
+use std::{
+    sync::{atomic::AtomicU64, Arc},
+    time::Duration,
+};
+use tokio::time::Instant;
 use tracing::instrument;
 
 /// Sent over the wire when [ExternalRequester] makes requests.
@@ -95,6 +101,11 @@ pub struct ExternalRequester {
 
     /// They don't enforce limits so we do this to be polite
     photon_limiter: LimitChain<'static>,
+    //TODO: Integrate these!!
+    /// If present, a time after which the next request is allowed, according to ORS
+    ors_retry_after: BackerOff,
+    /// If present, a time after which the next request is allowed, according to Komoot
+    photon_retry_after: BackerOff,
 }
 
 impl ExternalRequester {
@@ -139,6 +150,9 @@ impl ExternalRequester {
                 panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
             }),
             photon_limiter,
+            //TODO: Integrate these!!!
+            ors_retry_after: BackerOff::new().with_name("OpenRouteService".to_string()),
+            photon_retry_after: BackerOff::new().with_name("Photon".to_string()),
         }
     }
 
@@ -175,7 +189,7 @@ impl ExternalRequester {
         &self,
         coord: PhotonRevGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
-        self.try_photon_limit(1)?;
+        self.check_photon_limit(1)?;
         let q = [("lon", coord.lon), ("lat", coord.lat)];
         let res = self
             .client
@@ -199,7 +213,7 @@ impl ExternalRequester {
         &self,
         req: &PhotonGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
-        self.try_photon_limit(1)?;
+        self.check_photon_limit(1)?;
         let res = self
             .client
             .get(self.photon.clone())
@@ -213,7 +227,7 @@ impl ExternalRequester {
     // Originally this was intended for pub use in routes where we may know that we want more than
     // 1 request, but that's bad ergonomics and we have no routes which even use that yet
     /// ?-able wrapper of [LimitChain::try_consume] that lets us short-circuit to an error response
-    fn try_photon_limit(&self, n: u32) -> Result<()> {
+    fn check_photon_limit(&self, n: u32) -> Result<()> {
         if self.photon_limiter.try_consume(n) {
             Ok(())
         } else {
