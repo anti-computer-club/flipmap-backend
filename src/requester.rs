@@ -6,7 +6,7 @@ use crate::{
     retry_after::BackerOff,
     Result,
 };
-use reqwest::Url;
+use reqwest::{header, StatusCode, Url};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use std::time::Duration;
@@ -96,7 +96,6 @@ pub struct ExternalRequester {
 
     /// They don't enforce limits so we do this to be polite
     photon_limiter: LimitChain<'static>,
-    //TODO: Integrate these!!
     /// If present, a time after which the next request is allowed, according to ORS
     ors_retry_after: BackerOff,
     /// If present, a time after which the next request is allowed, according to Komoot
@@ -145,7 +144,6 @@ impl ExternalRequester {
                 panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
             }),
             photon_limiter,
-            //TODO: Integrate these!!!
             ors_retry_after: BackerOff::new().with_name("OpenRouteService".to_string()),
             photon_retry_after: BackerOff::new().with_name("Photon".to_string()),
         }
@@ -160,6 +158,7 @@ impl ExternalRequester {
     /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
+        self.check_backoff(&self.ors_retry_after)?;
         let res = self
             .client
             .post(self.ors_directions.clone())
@@ -184,6 +183,7 @@ impl ExternalRequester {
         &self,
         coord: PhotonRevGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.check_backoff(&self.photon_retry_after)?;
         self.check_photon_limit(1)?;
         let q = [("lon", coord.lon), ("lat", coord.lat)];
         let res = self
@@ -208,6 +208,7 @@ impl ExternalRequester {
         &self,
         req: &PhotonGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.check_backoff(&self.photon_retry_after)?;
         self.check_photon_limit(1)?;
         let res = self
             .client
@@ -228,6 +229,48 @@ impl ExternalRequester {
         } else {
             //TODO: Need to pass this more context
             Err(RouteError::new_external_api_limit_failure())
+        }
+    }
+
+    /// ?-able wrapper of [BackerOff::can_request] that also lets us short-circuit an app-relevant
+    /// error response
+    fn check_backoff(&self, backer_off: &BackerOff) -> Result<()> {
+        //TODO: Should this be a static method?
+        if backer_off.can_request() {
+            Ok(())
+        } else {
+            //TODO: Need to pass this more context
+            Err(RouteError::new_external_api_limit_failure())
+        }
+    }
+
+    fn check_limiting_status(
+        &self,
+        resp: reqwest::Response,
+        backer_off: &BackerOff,
+    ) -> Result<reqwest::Response> {
+        let status = resp.status();
+        // We only care about these response types (429|503). Any other !200 response is out of scope
+        if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+            let maybe_retry_val = resp
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|val| val.to_str().ok());
+
+            if let Some(value) = maybe_retry_val {
+                // Could add logging here w/ match if needed
+                let _ = backer_off.parse_maybe_set(value);
+            } else {
+                tracing::warn!("got {status} from request but no Retry-After value");
+                let _ = backer_off.maybe_set_without_header();
+            }
+
+            // In either case, this aborts further processing of the request.
+            //TODO: Need to pass this more context
+            Err(RouteError::new_external_api_limit_failure())
+        } else {
+            // Not the headers we're looking for
+            Ok(resp)
         }
     }
 }

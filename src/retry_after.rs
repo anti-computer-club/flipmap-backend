@@ -34,35 +34,32 @@ impl BackerOff {
         self
     }
 
-    /// Parses the value of a `Retry-After` header's value into an `Instant`.
-    /// The caller is responsible for ensuring the passed &str is from X-Retry-After or Retry-After
+    /// Parses the value of a `Retry-After` header and blocks further requests until time, if it's
+    /// in the future.
     ///
-    /// Handles both seconds-delay and HTTP-date formats. Returns `None` if parsing fails
-    /// or the value represents a time in the past.
-    #[instrument()]
-    pub fn parse_retry_value(value: &str) -> Option<Instant> {
-        if let Ok(secs) = value.parse::<u64>() {
-            return Some(Instant::now() + Duration::from_secs(secs));
+    /// The caller is responsible for ensuring the passed &str is from X-Retry-After or Retry-After
+    /// Handles both seconds-delay and HTTP-date formats as per RFC9110
+    ///
+    /// Returns `None` if parsing fails or the value represents a time in the past.
+    /// Returns `Some(Instant)` if a future instant was set
+    pub fn parse_maybe_set(&self, value: &str) -> Option<Instant> {
+        //TODO: Consider if this is a bad API... later
+        if let Some(monotonically_later) = self.parse_retry_value(value) {
+            self.set_retry_until(monotonically_later);
+            Some(monotonically_later)
+        } else {
+            None
         }
-        if let Ok(datetime) = DateTime::parse_from_rfc2822(value) {
-            // We have a datatime, but no guarantee if it's in the future!
-            // we need to check if this has passed according to our local system
-            // If not, we must find how far in the future it is and use that to construct and return an
-            // instant
-            return None; //TODO:placeholder
-        }
-        tracing::warn!("couldn't parse provided str {value} into any HTTP-date");
-        None
     }
 
-    /// Stores the calculated `Instant` until which requests should be blocked.
-    #[instrument(fields(name = self.name))]
-    pub fn set_retry_until(&self, instant: Instant) {
-        tracing::info!(
-            "setting backoff until {:?}",
-            instant.duration_since(Instant::now()) //TODO: is this right
-        );
-        self.until.store(Some(Arc::new(instant)));
+    /// For when we get a response we'd want to block further requests for, but don't know until how long.
+    ///
+    /// Ideally, would use some exponential backoff, but that'd take some wacky state-keeping inside
+    /// so currently it's just a 30s pause.
+    pub fn maybe_set_without_header(&self) -> Option<Instant> {
+        let later = Instant::now() + Duration::from_secs(30);
+        self.set_retry_until(later);
+        Some(later)
     }
 
     /// Checks if a request is allowed based on the stored backoff time.
@@ -91,5 +88,50 @@ impl BackerOff {
                 }
             }
         }
+    }
+
+    /// Stores the calculated `Instant` until which requests should be blocked.
+    #[instrument(fields(name = self.name))]
+    fn set_retry_until(&self, instant: Instant) {
+        tracing::info!(
+            "setting backoff until {:?}",
+            instant.duration_since(Instant::now()) //TODO: is this right
+        );
+        self.until.store(Some(Arc::new(instant)));
+    }
+
+    #[instrument()]
+    fn parse_retry_value(&self, value: &str) -> Option<Instant> {
+        if let Ok(secs) = value.parse::<u64>() {
+            return Some(Instant::now() + Duration::from_secs(secs));
+        }
+        if let Ok(datetime) = DateTime::parse_from_rfc2822(value) {
+            // We have a datetime, but no guarantee if it's in the future!
+            // We need to check if this has passed according to our local system time.
+            let now_utc = chrono::Utc::now();
+            let datetime_utc = datetime.with_timezone(&chrono::Utc);
+
+            if datetime_utc > now_utc {
+                // It's in the future. Calculate the duration.
+                // This duration conversion should be safe as we've checked it's positive.
+                match (datetime_utc - now_utc).to_std() {
+                    Ok(duration) => return Some(Instant::now() + duration),
+                    Err(e) => {
+                        // This case (negative duration) should technically be impossible
+                        // due to the `datetime_utc > now_utc` check, but handle defensively.
+                        tracing::error!(
+                            "unexpected negative time delta during HTTP-time parsing: {e:?}"
+                        );
+                        return None;
+                    }
+                }
+            } else {
+                // The specified time is in the past, so no backoff needed from this header.
+                tracing::debug!("parsed HTTP-date {value} is in the past, ignoring");
+                return None;
+            }
+        }
+        tracing::warn!("couldn't parse provided str {value} into seconds or HTTP-date");
+        None
     }
 }
