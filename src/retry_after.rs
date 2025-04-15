@@ -8,6 +8,7 @@ use std::{
 
 use arc_swap::ArcSwapOption;
 use chrono::DateTime;
+use tracing::instrument;
 
 // TODO: please find a better name
 #[derive(Debug, Default)]
@@ -38,6 +39,7 @@ impl BackerOff {
     ///
     /// Handles both seconds-delay and HTTP-date formats. Returns `None` if parsing fails
     /// or the value represents a time in the past.
+    #[instrument()]
     pub fn parse_retry_value(value: &str) -> Option<Instant> {
         if let Ok(secs) = value.parse::<u64>() {
             return Some(Instant::now() + Duration::from_secs(secs));
@@ -49,11 +51,12 @@ impl BackerOff {
             // instant
             return None; //TODO:placeholder
         }
+        tracing::warn!("couldn't parse provided str {value} into any HTTP-date");
         None
     }
 
-    // TODO: Instrument me
     /// Stores the calculated `Instant` until which requests should be blocked.
+    #[instrument(fields(name = self.name))]
     pub fn set_retry_until(&self, instant: Instant) {
         tracing::info!(
             "setting backoff until {:?}",
@@ -77,7 +80,9 @@ impl BackerOff {
                 if now >= **until_instant {
                     // Backoff period has passed. Try to clear it.
                     // Another thread may have already done this, or set a new backoff period
-                    // Failing is therefore O.K
+
+                    // Might be cool to debug and see which thread tried vs succeeded in swapping,
+                    // but not totally trivial to distinguish and log
                     let _ = self.until.compare_and_swap(&guard, None); // Attempt to clear
                     true
                 } else {

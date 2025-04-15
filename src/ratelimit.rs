@@ -6,10 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
+use tracing::instrument;
 
 /// Implements a simple fixed-window rate limit
 #[derive(Debug)]
 pub struct RateLimit {
+    /// Solely for logging
+    name: String,
     // We don't need to track this after construction but we currently use it to give ctxt to trace
     reset_interval: Duration,
     /// How many requests may be made in a given fixed window
@@ -20,29 +23,17 @@ pub struct RateLimit {
 }
 
 impl RateLimit {
-    pub fn new(limit: u32, reset_interval: Duration) -> Self {
+    pub fn new(limit: u32, reset_interval: Duration, name: String) -> Self {
         let counter = Arc::new(AtomicU32::new(0));
-        let counter_ref = counter.clone(); // Need another ref for task
 
-        // Makes logic to reset simpler. Cuts down on possible contention vs if we try to do in
-        // try_consume
-        let task_handle = tokio::spawn(async move {
-            let mut interval = interval(reset_interval);
-            tracing::debug!(
-                "ratelimit with interval {:?} now ticking",
-                interval.period()
-            );
-            interval.tick().await; // First one's instant, so do it now.
-            loop {
-                interval.tick().await;
-                //TODO: Audit ordering (this one's probably good)
-                counter_ref.store(0, Ordering::Relaxed);
-                //TODO: This won't be pretty and we might also benefit from instrumentation
-                tracing::debug!("reset ratelimit with interval {:?}", interval.period())
-            }
-        });
+        let task_handle = tokio::spawn(RateLimit::reset_task(
+            counter.clone(), // Just the Arc, FYI
+            reset_interval,
+            name.clone(),
+        ));
 
         RateLimit {
+            name,
             reset_interval,
             limit,
             counter,
@@ -106,18 +97,40 @@ impl RateLimit {
                 Ok(_) => {
                     // This could theoretically happen quite often in a busy application. -> debug
                     // or lower if it gets annoying
-                    tracing::warn!("rolling back ratelimit by {n}. this may cause usage underestimation if the limit was consumed in a prior window");
+                    tracing::warn!("{:?}: rolling back ratelimit by {n}. this may cause usage underestimation if the limit was consumed in a prior window", self.name);
                     return;
                 }
                 Err(_) => continue,
             }
         }
     }
+
+    /// Spawned in [RateLimit::new] to act as a timer which resets the limit
+    ///
+    /// Makes logic a bit simpler and may cut down on contention vs if we try to spin
+    /// for resets when checking in [RateLimit::try_consume]
+    #[instrument()]
+    async fn reset_task(counter: Arc<AtomicU32>, reset_interval: Duration, name: String) {
+        // TODO: See how instrumentation looks in practice
+        let mut interval = interval(reset_interval);
+        tracing::debug!(
+            "ratelimit with interval {:?} now ticking",
+            interval.period()
+        );
+        interval.tick().await; // First one's instant, so do it now.
+        loop {
+            interval.tick().await;
+            //TODO: Audit ordering (this one's probably good)
+            counter.store(0, Ordering::Relaxed);
+            tracing::debug!("reset ratelimit with interval {:?}", interval.period())
+        }
+    }
 }
 
 impl Drop for RateLimit {
+    #[instrument()]
     fn drop(&mut self) {
-        //TODO: Also yikes
+        // TODO: See how instrumentation looks in practice
         tracing::trace!(
             "aborting reset task for ratelimit with interval {:?}",
             self.reset_interval
@@ -177,7 +190,7 @@ mod tests {
     /// the refresh period has passed?
     #[tokio::test(start_paused = true)]
     async fn exhaust_and_refresh() {
-        let limit = RateLimit::new(5, Duration::from_secs(1));
+        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
 
         // Exhaust limit
         for _ in 0..5 {
@@ -200,8 +213,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn chain_exhaust_and_refresh() {
         let limits = [
-            RateLimit::new(5, Duration::from_secs(1)),
-            RateLimit::new(3, Duration::from_secs(1)),
+            RateLimit::new(5, Duration::from_secs(1), "Test!".to_string()),
+            RateLimit::new(3, Duration::from_secs(1), "Test2!".to_string()),
         ];
         let chain = LimitChain::new_from(&limits);
 
@@ -225,7 +238,7 @@ mod tests {
     /// Can we consume more than one from the [RateLimit] quota at once?
     #[tokio::test(start_paused = true)]
     async fn exhaust_multiple() {
-        let limit = RateLimit::new(5, Duration::from_secs(1));
+        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
 
         assert!(limit.try_consume(3));
         assert!(limit.try_consume(2));
@@ -235,7 +248,7 @@ mod tests {
     /// I prompted this so I'll just keep it. We've got a serious problem if it breaks
     #[tokio::test(start_paused = true)]
     async fn test_zero_consumption() {
-        let limit = RateLimit::new(5, Duration::from_secs(1));
+        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
         assert!(limit.try_consume(0)); // Should always succeed
     }
 }

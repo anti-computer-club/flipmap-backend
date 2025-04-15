@@ -6,15 +6,10 @@ use crate::{
     retry_after::BackerOff,
     Result,
 };
-use arc_swap::{ArcSwapAny, ArcSwapOption};
 use reqwest::Url;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
-use std::{
-    sync::{atomic::AtomicU64, Arc},
-    time::Duration,
-};
-use tokio::time::Instant;
+use std::time::Duration;
 use tracing::instrument;
 
 /// Sent over the wire when [ExternalRequester] makes requests.
@@ -125,8 +120,8 @@ impl ExternalRequester {
 
         // Parity with OpenRouteService limits (may or may not be a good idea)
         let photon_limits = vec![
-            RateLimit::new(40, Duration::from_secs(60)),
-            RateLimit::new(2000, Duration::from_secs(86400)),
+            RateLimit::new(40, Duration::from_secs(60), "Photon Minutely".to_string()),
+            RateLimit::new(2000, Duration::from_secs(86400), "Photon Daily".to_string()),
         ];
 
         // Not sure if optimal, but making this static here makes life way easier
