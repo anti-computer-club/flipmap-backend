@@ -25,5 +25,5 @@ validator = { version = "0.20.0", features = ["derive"] }
 clap = { version = "4.5.29", features = ["derive", "env"] }
 # Used to make retry-after lock free
 arc-swap = "1.7.1"
-# Parses RFC 2822 date-times from Retry-After
-chrono = "0.4.38"
+# Parses dates for retry_after
+httpdate = "1.0.3"

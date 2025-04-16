@@ -7,9 +7,9 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
-use chrono::DateTime;
+use httpdate::parse_http_date;
 #[cfg(not(test))]
-use chrono::Utc;
+use std::time::SystemTime;
 use tracing::instrument;
 
 // TODO: please find a better name im begging you (me)
@@ -100,7 +100,7 @@ impl BackerOff {
         //problematic way
         tracing::info!(
             "setting backoff until {:?}",
-            instant.duration_since(Instant::now()) //TODO: is this right
+            instant.duration_since(Instant::now())
         );
         self.until.store(Some(Arc::new(instant)));
     }
@@ -110,31 +110,22 @@ impl BackerOff {
         if let Ok(secs) = value.parse::<u64>() {
             return Some(Duration::from_secs(secs));
         }
-        if let Ok(datetime) = DateTime::parse_from_rfc2822(value) {
+        if let Ok(datetime) = parse_http_date(value) {
             // We have a datetime, but no guarantee if it's in the future!
             // We need to check if this has passed according to our local system time.
-            let now_utc = Utc::now();
-            let datetime_utc = datetime.with_timezone(&chrono::Utc);
+            let now = SystemTime::now();
 
-            if datetime_utc > now_utc {
-                // It's in the future. Calculate the duration.
-                // This duration conversion should be safe as we've checked it's positive.
-                match (datetime_utc - now_utc).to_std() {
-                    Ok(duration) => return Some(duration),
-                    Err(e) => {
-                        // This case (negative duration) should technically be impossible
-                        // due to the `datetime_utc > now_utc` check, but handle defensively.
-                        tracing::error!(
-                            "unexpected negative time delta during HTTP-time parsing: {e:?}"
-                        );
-                        return None;
-                    }
+            // Find out if it's from the future or not
+            return match datetime.duration_since(now) {
+                Ok(duration) => Some(duration),
+                Err(e) => {
+                    //TODO: Are there other possible errors herre? I think not
+                    tracing::warn!(
+                        "parsed HTTP-date {datetime:?} is in the past ({e:?}), ignoring"
+                    );
+                    None
                 }
-            } else {
-                // The specified time is in the past, so no backoff needed from this header.
-                tracing::debug!("parsed HTTP-date {value} is in the past, ignoring");
-                return None;
-            }
+            };
         }
         tracing::warn!("couldn't parse provided str {value} into seconds or HTTP-date");
         None
@@ -142,19 +133,19 @@ impl BackerOff {
 }
 
 #[cfg(test)]
-use utc_mock::Utc;
+use time_mock::SystemTime;
 
 #[cfg(test)]
-mod utc_mock {
-    use chrono::{DateTime, NaiveDate, TimeZone};
-    pub struct Utc {}
-    impl Utc {
-        pub fn now() -> DateTime<chrono::Utc> {
-            let dt = NaiveDate::from_ymd_opt(2001, 1, 1)
-                .unwrap()
-                .and_hms_opt(9, 30, 0)
-                .unwrap();
-            chrono::Utc.from_utc_datetime(&dt)
+mod time_mock {
+    use std::time::{self, Duration};
+
+    pub struct SystemTime {}
+    impl SystemTime {
+        pub fn now() -> time::SystemTime {
+            // Trust me bro
+            const JAN_1_2001_9_30_AM: u64 = 978_341_400;
+            const DELTA: Duration = Duration::from_secs(JAN_1_2001_9_30_AM);
+            time::SystemTime::UNIX_EPOCH + DELTA
         }
     }
 }
@@ -162,14 +153,9 @@ mod utc_mock {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn check_mocked_utc() {
-        let now = Utc::now();
-        // theoretically this could fail with an update to chrono because this standard isn't
-        // toally prescriptive
-        assert_eq!(now.to_rfc2822(), "Mon, 1 Jan 2001 09:30:00 +0000");
-    }
+    // TODO: The 'past' tests don't actually test exactly that (since we get None for fails to
+    // parse also) the future tests prove that isn't currently issue, but that still isn't great
+    // practice
 
     // Any non-negative decimal integer should be parsable to seconds according to RFC9110 10.2.3
     #[test]
@@ -220,7 +206,7 @@ mod tests {
         let backer = BackerOff::new();
         // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
         // This is 1 hour (3600 seconds) after mock time
-        let future_date = "Mon, 1 Jan 2001 10:30:00 +0000";
+        let future_date = "Mon, 01 Jan 2001 10:30:00 GMT";
         assert_eq!(
             backer.parse_retry_value(future_date),
             Some(Duration::from_secs(3600))
@@ -232,7 +218,7 @@ mod tests {
         let backer = BackerOff::new();
         // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
         // This is 1 hour before mock time
-        let past_date = "Mon, 1 Jan 2001 08:30:00 +0000";
+        let past_date = "Mon, 01 Jan 2001 08:30:00 GMT";
         assert_eq!(backer.parse_retry_value(past_date), None);
     }
 
