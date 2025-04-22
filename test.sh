@@ -18,6 +18,8 @@ commands=(
 
   # HTTP 200 Live test. Should work fine.
   'curl -v -m 30 -X POST 127.0.0.1:1337/route -H "Content-Type: application/json" -d "{\"lat\": 44.568760,\"lon\": -123.277961,\"query\":\"Downward Dog\"}"'
+  # HTTP 200 Live test. Should work fine for search feature.
+  'curl -v -m 30 -X POST 127.0.0.1:8080/get_locations -H "Content-Type: application/json" -d  "{\"amount\": 20, \"lat\": 44.568760,\"lon\": -123.277961,\"query\":\"Starbucks\"}"'
 )
 
 for command in "${commands[@]}"; do
