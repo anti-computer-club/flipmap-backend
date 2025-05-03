@@ -1,9 +1,10 @@
 //! Implements a simple fixed-window limiter [RateLimit] intended for thread-safe operation in the
-//! Tokio runtime. Spawns an internal task to reset.
+//! Tokio runtime. Spawns an internal task to reset. Lock-free.
 
+use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tracing::instrument;
@@ -19,6 +20,9 @@ pub struct RateLimit {
     limit: u32,
     /// How many have been made so far
     counter: Arc<AtomicU32>,
+    // The tiny possibility of stale data influencing a response is no big deal here
+    /// When the current window is expected to reset
+    next_reset: Arc<ArcSwap<Instant>>,
     task_handle: JoinHandle<()>,
 }
 
@@ -26,8 +30,11 @@ impl RateLimit {
     pub fn new(limit: u32, reset_interval: Duration, name: String) -> Self {
         let counter = Arc::new(AtomicU32::new(0));
 
+        let next_reset = Arc::new(ArcSwap::new(Arc::new(Instant::now() + reset_interval)));
+
         let task_handle = tokio::spawn(RateLimit::reset_task(
-            counter.clone(), // Just the Arc, FYI
+            counter.clone(),
+            next_reset.clone(),
             reset_interval,
             name.clone(),
         ));
@@ -37,22 +44,27 @@ impl RateLimit {
             reset_interval,
             limit,
             counter,
+            next_reset,
             task_handle,
         }
     }
 
     /// Attempts to consume `n` from the rate limit.
     ///
-    /// Returns: `true` if it is possible, `false` otherwise.
+    /// Returns: `Ok(())` if it is possible, `Err(Instant)` otherwise, where `Instant`
+    /// is the approximate time the window will reset next.
     ///
-    /// True returns also increment internal counter. Atomic.
-    pub fn try_consume(&self, n: u32) -> bool {
+    /// Ok returns also increment internal counter. Atomic.
+    pub fn try_consume(&self, n: u32) -> Result<(), Instant> {
         // Obvious answers for try-consuming 0 or more than is possible
         if n == 0 {
-            return true;
+            return Ok(());
         }
         if n > self.limit {
-            return false;
+            // This isn't a great API because reset doesn't matter here
+            tracing::warn!("{n} tokens requested from ratelimiter '{}' which is more than will ever be available - max {} in per window",
+                self.name, self.limit);
+            return Err(*self.next_reset.load_full());
         }
 
         // We must retry each time another thread modifies the counter first
@@ -64,7 +76,8 @@ impl RateLimit {
 
             // We would exceed the limit
             if new > self.limit {
-                return false;
+                // Return the stored reset time on failure
+                return Err(*self.next_reset.load_full());
             }
 
             match self
@@ -72,8 +85,8 @@ impl RateLimit {
                 //TODO: Audit ordering
                 .compare_exchange(count, new, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return true,
-                Err(_) => continue,
+                Ok(_) => return Ok(()), // Success
+                Err(_) => continue,     // Contention, retry loop
             }
         }
     }
@@ -105,24 +118,44 @@ impl RateLimit {
         }
     }
 
-    /// Spawned in [RateLimit::new] to act as a timer which resets the limit
+    /// Spawned in [RateLimit::new] to act as a timer which resets the limit and updates the
+    /// next expected reset time.
     ///
     /// Makes logic a bit simpler and may cut down on contention vs if we try to spin
     /// for resets when checking in [RateLimit::try_consume]
-    #[instrument()]
-    async fn reset_task(counter: Arc<AtomicU32>, reset_interval: Duration, name: String) {
-        // TODO: See how instrumentation looks in practice
+    #[instrument(skip(next_reset))]
+    async fn reset_task(
+        counter: Arc<AtomicU32>,
+        next_reset: Arc<ArcSwap<Instant>>,
+        reset_interval: Duration,
+        name: String,
+    ) {
         let mut interval = interval(reset_interval);
         tracing::debug!(
-            "ratelimit with interval {:?} now ticking",
+            "{:?}: ratelimit reset task with interval {:?} now ticking",
+            name,
             interval.period()
         );
-        interval.tick().await; // First one's instant, so do it now.
+
+        // First tick is immediate, consume it. We already set the first reset time in `new`.
+        interval.tick().await;
+
         loop {
+            // Calculate the *next* reset time *before* waiting for the tick.
+            // This is redundant on first-run but more accurate. Lesser evil?
+            let next_reset_time = Instant::now() + reset_interval;
+            next_reset.store(Arc::new(next_reset_time));
+
             interval.tick().await;
-            //TODO: Audit ordering (this one's probably good)
+
+            // Reset the counter for the *new* window that just started.
+            // Relaxed is likely fine as the timing is primarily controlled by the interval timer.
             counter.store(0, Ordering::Relaxed);
-            tracing::debug!("reset ratelimit with interval {:?}", interval.period())
+            tracing::debug!(
+                "{:?}: reset ratelimit counter, next reset in {:?}",
+                name,
+                reset_interval
+            );
         }
     }
 }
@@ -160,21 +193,32 @@ impl<'a> LimitChain<'a> {
     }
 
     /// Attempt to consume n quota items from every included [RateLimit]. Undoes upon failure of
-    /// any limit
-    pub fn try_consume(&self, n: u32) -> bool {
-        let mut last_acceptor = 0;
+    /// any limit.
+    ///
+    /// Returns `Ok(())` on success, or `Err(Instant)` with the reset time of the *first* limit
+    /// that failed.
+    pub fn try_consume(&self, n: u32) -> Result<(), Instant> {
+        let mut last_acceptor_idx = 0; // Track index up to which limits succeeded
+
         for (i, limit) in self.limits.iter().enumerate() {
-            if limit.try_consume(n) {
-                last_acceptor = i;
-            } else {
-                // Any failure means we must go back to each previous limit and put the tokens back. This is imperfect.
-                self.limits[..last_acceptor]
-                    .iter()
-                    .for_each(|limit| limit.undo(n));
-                return false;
+            match limit.try_consume(n) {
+                Ok(_) => {
+                    // Only update if this limit succeeded
+                    last_acceptor_idx = i + 1; // Store index *after* the successful one
+                }
+                Err(instant) => {
+                    // Failure: undo consumption for all *previously successful* limits
+                    // Use the stored index to slice correctly.
+                    self.limits[..last_acceptor_idx]
+                        .iter()
+                        .for_each(|succeeded_limit| succeeded_limit.undo(n));
+                    // Return the Instant from the limit that failed
+                    return Err(instant);
+                }
             }
         }
-        true
+        // All limits succeeded
+        Ok(())
     }
 }
 
@@ -186,53 +230,93 @@ mod tests {
         time::{self, Duration},
     };
 
+    /// They say that monotonic clocks are monotonic. Duh. I say: why do two calls in my test code jump
+    /// back hundreds of nanoseconds?
+    ///
+    /// This function checks if two instants are equal *enough*
+    fn timey_wime_check(a: Instant, b: Instant) -> bool {
+        const WIBBLE_FACTOR: Duration = Duration::from_millis(1);
+        let before = b - WIBBLE_FACTOR;
+        let after = b + WIBBLE_FACTOR;
+        a > before && a < after
+    }
+
     /// Basic operation of a [RateLimit]: can we use all (and no further), but then use again after
     /// the refresh period has passed?
     #[tokio::test(start_paused = true)]
     async fn exhaust_and_refresh() {
         let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
 
+        let start_time = Instant::now();
+        let expected_reset = start_time + Duration::from_secs(1);
+
         // Exhaust limit
         for _ in 0..5 {
-            assert!(limit.try_consume(1));
+            assert!(limit.try_consume(1).is_ok());
         }
-        assert!(!limit.try_consume(1));
+        // Next one should fail and return the expected reset time
+        match limit.try_consume(1) {
+            Ok(_) => panic!("Limit should have been exhausted"),
+            Err(reset_time) => {
+                assert!(timey_wime_check(reset_time, expected_reset));
+            }
+        }
 
         // Advance time instantly. The fact that both yields is required
-        // is something of an incantation for me. I wish I knew what was going on
+        // is something of an incantation for me. I wish I knew what was going on.
         // Remove one and see. I dare you.
         task::yield_now().await;
         time::advance(Duration::from_secs(1)).await;
         task::yield_now().await;
 
         // Verify we've reset time
-        assert!(limit.try_consume(1));
+        assert!(limit.try_consume(1).is_ok());
     }
 
     /// Ditto but with [LimitChain]
     #[tokio::test(start_paused = true)]
     async fn chain_exhaust_and_refresh() {
+        let start_time = Instant::now();
+        let expected_reset = start_time + Duration::from_secs(1);
         let limits = [
             RateLimit::new(5, Duration::from_secs(1), "Test!".to_string()),
             RateLimit::new(3, Duration::from_secs(1), "Test2!".to_string()),
         ];
         let chain = LimitChain::new_from(&limits);
 
-        // Exhaust limit of one
-        assert!(chain.try_consume(2));
-        assert!(chain.try_consume(1));
-        // Ensure one is all it takes
-        assert!(!chain.try_consume(1));
+        // Exhaust limit of the second (stricter) limit
+        assert!(chain.try_consume(2).is_ok());
+        assert!(chain.try_consume(1).is_ok());
+        // Ensure one is all it takes - should fail on the second limit
+        match chain.try_consume(1) {
+            Ok(_) => panic!("Chain limit should have been exhausted by the second limit"),
+            Err(reset_time) => {
+                // The reset time should come from the second limit (index 1)
+                assert!(timey_wime_check(reset_time, expected_reset));
+
+                // Both should be at 3. 1st is temporarily at 4 and then rolled back.
+                assert_eq!(
+                    limits[0].counter.load(Ordering::Relaxed),
+                    3,
+                    "First limit counter should be rolled back"
+                );
+                assert_eq!(
+                    limits[1].counter.load(Ordering::Relaxed),
+                    3,
+                    "Second limit counter should be at its max"
+                );
+            }
+        }
 
         task::yield_now().await;
         time::advance(Duration::from_secs(1)).await;
         task::yield_now().await;
 
-        // Verify we've reset time
-        assert!(chain.try_consume(1));
-        assert!(chain.try_consume(2));
-        // Again and again
-        assert!(!chain.try_consume(1));
+        // Verify we've reset time - both limits should allow consumption now
+        assert!(chain.try_consume(1).is_ok());
+        assert!(chain.try_consume(2).is_ok());
+        // Again and again - should fail on the second limit again
+        assert!(chain.try_consume(1).is_err());
     }
 
     /// Can we consume more than one from the [RateLimit] quota at once?
@@ -240,15 +324,15 @@ mod tests {
     async fn exhaust_multiple() {
         let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
 
-        assert!(limit.try_consume(3));
-        assert!(limit.try_consume(2));
-        assert!(!limit.try_consume(1));
+        assert!(limit.try_consume(3).is_ok());
+        assert!(limit.try_consume(2).is_ok());
+        assert!(limit.try_consume(1).is_err()); // Should fail now
     }
 
     /// I prompted this so I'll just keep it. We've got a serious problem if it breaks
     #[tokio::test(start_paused = true)]
     async fn test_zero_consumption() {
         let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
-        assert!(limit.try_consume(0)); // Should always succeed
+        assert!(limit.try_consume(0).is_ok()); // Should always succeed with Ok(())
     }
 }
