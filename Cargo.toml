@@ -27,3 +27,5 @@ clap = { version = "4.5.29", features = ["derive", "env"] }
 arc-swap = "1.7.1"
 # Parses dates for retry_after
 httpdate = "1.0.3"
+# Required for utility code to be *real libraries* or something
+thiserror = "2.0.12"
