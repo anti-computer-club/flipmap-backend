@@ -328,3 +328,22 @@ impl ExternalRequester {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Don't cares: timeout/weird resets/etc (reqwest handles), edge-cases of ratelimit/retry_after
+    // (better handled as unit test there)
+
+    // Make 2-3 requests within limit bounds
+
+    // Get a 429 with valid retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get a 503 with no retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get an internal server error. what happens?
+
+    // Exceed the rate limit. Wait for reset. Make good requests.
+}
