@@ -1,7 +1,12 @@
 //! Wraps [reqwest] to make external API calls to OpenRouteService and Komoot easier.
 //! *Not a stable API.*
-use crate::Result;
-use reqwest::Url;
+use crate::{
+    error::RouteError,
+    ratelimit::{LimitChain, RateLimit},
+    retry_after::{self, BackerOff},
+    Result,
+};
+use reqwest::{header, StatusCode, Url};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use std::time::Duration;
@@ -9,6 +14,10 @@ use tracing::instrument;
 
 /// Sent over the wire when [ExternalRequester] makes requests.
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"),);
+
+const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
+const PHOTON_PATH: &str = "/api/";
+const PHOTON_REVERSE_PATH: &str = "/reverse";
 
 /// Serializable payload for OpenRouteService routing v2 requests.
 ///
@@ -76,6 +85,89 @@ impl PhotonRevGeocodeRequest {
     }
 }
 
+/// Used to construct [ExternalRequester]. Niche and opinionated defaults are deployed for endpoint
+/// URLs and Photon rate-limiting if the setters are not used.
+#[derive(Clone, Debug)]
+pub struct ExternalRequesterBuilder {
+    // The client *could* be configurable here.
+    open_route_service_key: SecretString,
+
+    ors_base: Url,
+    photon_base: Url,
+
+    // Sue me. It's internal
+    photon_limit_params: Vec<(u32, Duration, String)>,
+    // BackerOffs are not configurable.
+}
+
+impl ExternalRequesterBuilder {
+    pub fn new(ors_base: Url, photon_base: Url, open_route_service_key: SecretString) -> Self {
+        Self {
+            open_route_service_key,
+            ors_base,
+            photon_base,
+            photon_limit_params: vec![],
+        }
+    }
+
+    pub fn with_photon_ratelimiter(
+        mut self,
+        requests_allowed: u32,
+        reset_time: Duration,
+        name: String,
+    ) -> Self {
+        self.photon_limit_params
+            .push((requests_allowed, reset_time, name));
+        self
+    }
+
+    pub fn build(self) -> ExternalRequester {
+        let ratelimit_params = if self.photon_limit_params.is_empty() {
+            vec![
+                // Parity with OpenRouteService limits (may or may not be a good idea)
+                (40, Duration::from_secs(60), "Photon Minutely".to_string()),
+                (2000, Duration::from_secs(86400), "Photon Daily".to_string()),
+            ]
+        } else {
+            self.photon_limit_params
+        };
+
+        let photon_limits: Vec<RateLimit> = ratelimit_params
+            .iter()
+            .map(|truple| RateLimit::new(truple.0, truple.1, truple.2.clone()))
+            .collect();
+        // Not sure if optimal, but making this static here makes life way easier
+        let photon_limiter = LimitChain::new_from(Box::leak(photon_limits.into_boxed_slice()));
+
+        ExternalRequester {
+            client: reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(10))
+                .https_only(true)
+                .build()
+                .unwrap_or_else(|e| panic!("couldn't build reqwest Client: {:?}", e)),
+            open_route_service_key: self.open_route_service_key,
+            ors_directions: self
+                .ors_base
+                .join(ORS_DIRECTIONS_PATH)
+                .unwrap_or_else(|e| panic!("couldn't assemble ors directions full URL: {:?}", e)),
+            photon: self
+                .photon_base
+                .join(PHOTON_PATH)
+                .unwrap_or_else(|e| panic!("couldn't assemble photon geocoding full URL: {:?}", e)),
+            photon_reverse: self
+                .photon_base
+                .join(PHOTON_REVERSE_PATH)
+                .unwrap_or_else(|e| {
+                    panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
+                }),
+            photon_limiter,
+            ors_retry_after: BackerOff::new().with_name("OpenRouteService".to_string()),
+            photon_retry_after: BackerOff::new().with_name("Photon".to_string()),
+        }
+    }
+}
+
 /// Wraps [reqwest::Client] to provide opinionated execution and parsing of external API endpoints.
 #[derive(Debug)]
 pub struct ExternalRequester {
@@ -83,12 +175,18 @@ pub struct ExternalRequester {
     client: reqwest::Client,
     // Shouldn't leak to logs unless Reqwest traces headers? Won't get sent over wire in response either way
     open_route_service_key: SecretString,
-    // We also use Photon (via Komoot) but it has an unauthenticated API
 
     // client.post() won't take &Url but .clone() is no worse than passing &str and front-loads error checking
     ors_directions: Url,
     photon: Url,
     photon_reverse: Url,
+
+    /// They don't enforce limits so we do this to be polite
+    photon_limiter: LimitChain<'static>,
+    /// If present, a time after which the next request is allowed, according to ORS
+    ors_retry_after: BackerOff,
+    /// If present, a time after which the next request is allowed, according to Komoot
+    photon_retry_after: BackerOff,
 }
 
 impl ExternalRequester {
@@ -100,29 +198,7 @@ impl ExternalRequester {
     /// Caused if a proper 'base' [Url] was parsed into [Opt](crate::Opt), but somehow can't be extended
     /// with the exact endpoints hardcoded here
     pub fn new(ors_base: Url, photon_base: Url, open_route_service_key: SecretString) -> Self {
-        // These might not actually be constant among all deployments. Works for now.
-        // Could shift defaults into here and use a builder pattern if needed?
-        const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
-        const PHOTON_PATH: &str = "/api/";
-        const PHOTON_REVERSE_PATH: &str = "/reverse";
-        ExternalRequester {
-            client: reqwest::Client::builder()
-                .user_agent(USER_AGENT)
-                .timeout(Duration::from_secs(10))
-                .https_only(true)
-                .build()
-                .unwrap_or_else(|e| panic!("couldn't build reqwest Client: {:?}", e)),
-            open_route_service_key,
-            ors_directions: ors_base
-                .join(ORS_DIRECTIONS_PATH)
-                .unwrap_or_else(|e| panic!("couldn't assemble ors directions full URL: {:?}", e)),
-            photon: photon_base
-                .join(PHOTON_PATH)
-                .unwrap_or_else(|e| panic!("couldn't assemble photon geocoding full URL: {:?}", e)),
-            photon_reverse: photon_base.join(PHOTON_REVERSE_PATH).unwrap_or_else(|e| {
-                panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
-            }),
-        }
+        ExternalRequesterBuilder::new(ors_base, photon_base, open_route_service_key).build()
     }
 
     /// Prepare *and execute* a request to OpenRouteService v2 directions endpoint.
@@ -134,6 +210,7 @@ impl ExternalRequester {
     /// [geojson::FeatureCollection] and fails
     #[instrument(skip(self))]
     pub async fn ors_send(&self, req: &OpenRouteRequest) -> Result<geojson::FeatureCollection> {
+        self.ors_retry_after.can_request()?;
         let res = self
             .client
             .post(self.ors_directions.clone())
@@ -158,6 +235,8 @@ impl ExternalRequester {
         &self,
         coord: PhotonRevGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.photon_retry_after.can_request()?; // Checks for backoff period
+        self.check_photon_limit(1)?; // Checks our own ratelimiter
         let q = [("lon", coord.lon), ("lat", coord.lat)];
         let res = self
             .client
@@ -181,6 +260,8 @@ impl ExternalRequester {
         &self,
         req: &PhotonGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
+        self.photon_retry_after.can_request()?;
+        self.check_photon_limit(1)?;
         let res = self
             .client
             .get(self.photon.clone())
@@ -190,4 +271,79 @@ impl ExternalRequester {
         let obj = res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
     }
+
+    // Originally this was intended for pub use in routes where we may know that we want more than
+    // 1 request, but that's bad ergonomics and we have no routes which even use that yet
+    /// ?-able wrapper of [LimitChain::try_consume] that lets us short-circuit to an error response
+    /// with the appropriate `Instant` indicating when the limit might reset.
+    fn check_photon_limit(&self, n: u32) -> Result<()> {
+        self.photon_limiter
+            .try_consume(n)
+            .map_err(RouteError::new_external_api_limit_failure)
+    }
+
+    /// Checks if the response indicates a rate limit (429/503) and sets the backoff accordingly.
+    /// Returns `Err(RouteError::ExternalAPILimit)` if backoff was triggered, otherwise Ok(response).
+    fn check_limiting_status(
+        &self,
+        resp: reqwest::Response,
+        backer_off: &BackerOff,
+    ) -> Result<reqwest::Response> {
+        let status = resp.status();
+        // We only care about these response types (429|503). Any other !200 response is out of scope
+        if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+            let maybe_retry_val = resp
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|val| val.to_str().ok());
+
+            // Set backoff based on header or default, and get the resulting Instant
+            if let Some(value) = maybe_retry_val {
+                match backer_off.parse_maybe_set(value) {
+                    Ok(_) => {}
+                    Err(retry_after::Error::ParseFail(s)) => {
+                        tracing::warn!("using default retry-after due to unparsable header: {s}");
+                        backer_off.set_without_header();
+                    }
+                    Err(retry_after::Error::FromPast) => {
+                        tracing::warn!("passing request along because remote returned retry-after from the past");
+                        return Ok(resp); // sue me
+                    }
+                }
+            } else {
+                tracing::warn!("got {status} from request but no Retry-After value, using default");
+                backer_off.set_without_header();
+            };
+
+            match backer_off.get_retry_until() {
+                Some(inst) => Err(RouteError::ExternalAPILimit(inst)),
+                None => {
+                    tracing::error!("attempted to set retry-after, but query afterwards found none! passing request...");
+                    Ok(resp) // Good luck lil' buddy
+                }
+            }
+        } else {
+            // Not a limiting status code, pass the response through.
+            Ok(resp)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Don't cares: timeout/weird resets/etc (reqwest handles), edge-cases of ratelimit/retry_after
+    // (better handled as unit test there)
+
+    // Make 2-3 requests within limit bounds
+
+    // Get a 429 with valid retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get a 503 with no retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get an internal server error. what happens?
+
+    // Exceed the rate limit. Wait for reset. Make good requests.
 }
