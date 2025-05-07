@@ -15,6 +15,10 @@ use tracing::instrument;
 /// Sent over the wire when [ExternalRequester] makes requests.
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"),);
 
+const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
+const PHOTON_PATH: &str = "/api/";
+const PHOTON_REVERSE_PATH: &str = "/reverse";
+
 /// Serializable payload for OpenRouteService routing v2 requests.
 ///
 /// **Very unstable.** Implements a tiny subset of options that are immediately useful to the program.
@@ -81,6 +85,89 @@ impl PhotonRevGeocodeRequest {
     }
 }
 
+/// Used to construct [ExternalRequester]. Niche and opinionated defaults are deployed for endpoint
+/// URLs and Photon rate-limiting if the setters are not used.
+#[derive(Clone, Debug)]
+pub struct ExternalRequesterBuilder {
+    // The client *could* be configurable here.
+    open_route_service_key: SecretString,
+
+    ors_base: Url,
+    photon_base: Url,
+
+    // Sue me. It's internal
+    photon_limit_params: Vec<(u32, Duration, String)>,
+    // BackerOffs are not configurable.
+}
+
+impl ExternalRequesterBuilder {
+    pub fn new(ors_base: Url, photon_base: Url, open_route_service_key: SecretString) -> Self {
+        Self {
+            open_route_service_key,
+            ors_base,
+            photon_base,
+            photon_limit_params: vec![],
+        }
+    }
+
+    pub fn with_photon_ratelimiter(
+        mut self,
+        requests_allowed: u32,
+        reset_time: Duration,
+        name: String,
+    ) -> Self {
+        self.photon_limit_params
+            .push((requests_allowed, reset_time, name));
+        self
+    }
+
+    pub fn build(self) -> ExternalRequester {
+        let ratelimit_params = if self.photon_limit_params.is_empty() {
+            vec![
+                // Parity with OpenRouteService limits (may or may not be a good idea)
+                (40, Duration::from_secs(60), "Photon Minutely".to_string()),
+                (2000, Duration::from_secs(86400), "Photon Daily".to_string()),
+            ]
+        } else {
+            self.photon_limit_params
+        };
+
+        let photon_limits: Vec<RateLimit> = ratelimit_params
+            .iter()
+            .map(|truple| RateLimit::new(truple.0, truple.1, truple.2.clone()))
+            .collect();
+        // Not sure if optimal, but making this static here makes life way easier
+        let photon_limiter = LimitChain::new_from(Box::leak(photon_limits.into_boxed_slice()));
+
+        ExternalRequester {
+            client: reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(10))
+                .https_only(true)
+                .build()
+                .unwrap_or_else(|e| panic!("couldn't build reqwest Client: {:?}", e)),
+            open_route_service_key: self.open_route_service_key,
+            ors_directions: self
+                .ors_base
+                .join(ORS_DIRECTIONS_PATH)
+                .unwrap_or_else(|e| panic!("couldn't assemble ors directions full URL: {:?}", e)),
+            photon: self
+                .photon_base
+                .join(PHOTON_PATH)
+                .unwrap_or_else(|e| panic!("couldn't assemble photon geocoding full URL: {:?}", e)),
+            photon_reverse: self
+                .photon_base
+                .join(PHOTON_REVERSE_PATH)
+                .unwrap_or_else(|e| {
+                    panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
+                }),
+            photon_limiter,
+            ors_retry_after: BackerOff::new().with_name("OpenRouteService".to_string()),
+            photon_retry_after: BackerOff::new().with_name("Photon".to_string()),
+        }
+    }
+}
+
 /// Wraps [reqwest::Client] to provide opinionated execution and parsing of external API endpoints.
 #[derive(Debug)]
 pub struct ExternalRequester {
@@ -111,42 +198,7 @@ impl ExternalRequester {
     /// Caused if a proper 'base' [Url] was parsed into [Opt](crate::Opt), but somehow can't be extended
     /// with the exact endpoints hardcoded here
     pub fn new(ors_base: Url, photon_base: Url, open_route_service_key: SecretString) -> Self {
-        // These might not actually be constant among all deployments. Works for now.
-        // Could shift defaults into here and use a builder pattern if needed?
-        const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
-        const PHOTON_PATH: &str = "/api/";
-        const PHOTON_REVERSE_PATH: &str = "/reverse";
-
-        // Parity with OpenRouteService limits (may or may not be a good idea)
-        let photon_limits = vec![
-            RateLimit::new(40, Duration::from_secs(60), "Photon Minutely".to_string()),
-            RateLimit::new(2000, Duration::from_secs(86400), "Photon Daily".to_string()),
-        ];
-
-        // Not sure if optimal, but making this static here makes life way easier
-        let photon_limiter = LimitChain::new_from(Box::leak(photon_limits.into_boxed_slice()));
-
-        ExternalRequester {
-            client: reqwest::Client::builder()
-                .user_agent(USER_AGENT)
-                .timeout(Duration::from_secs(10))
-                .https_only(true)
-                .build()
-                .unwrap_or_else(|e| panic!("couldn't build reqwest Client: {:?}", e)),
-            open_route_service_key,
-            ors_directions: ors_base
-                .join(ORS_DIRECTIONS_PATH)
-                .unwrap_or_else(|e| panic!("couldn't assemble ors directions full URL: {:?}", e)),
-            photon: photon_base
-                .join(PHOTON_PATH)
-                .unwrap_or_else(|e| panic!("couldn't assemble photon geocoding full URL: {:?}", e)),
-            photon_reverse: photon_base.join(PHOTON_REVERSE_PATH).unwrap_or_else(|e| {
-                panic!("couldn't assemble photon rev geocoding full URL: {:?}", e)
-            }),
-            photon_limiter,
-            ors_retry_after: BackerOff::new().with_name("OpenRouteService".to_string()),
-            photon_retry_after: BackerOff::new().with_name("Photon".to_string()),
-        }
+        ExternalRequesterBuilder::new(ors_base, photon_base, open_route_service_key).build()
     }
 
     /// Prepare *and execute* a request to OpenRouteService v2 directions endpoint.
