@@ -15,6 +15,7 @@ use validator::ValidationErrors;
 
 /// All expectable errors. Internal tuple values represent information that's safe to send in
 /// response. Most relevant information should be traced rather than placed inside.
+#[derive(Debug)]
 pub enum RouteError {
     /// HTTP 422(always?): Produced by [axum::Json] when it doesn't like the request. Includes error.
     RequestJson(Box<JsonRejection>),

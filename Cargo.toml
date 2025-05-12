@@ -29,3 +29,6 @@ arc-swap = "1.7.1"
 httpdate = "1.0.3"
 # Required for utility code to be *real libraries* or something
 thiserror = "2.0.12"
+
+[dev-dependencies]
+httpmock = "0.7.0"

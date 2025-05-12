@@ -12,9 +12,16 @@ use serde::Serialize;
 use std::time::Duration;
 use tracing::instrument;
 
+// Testing without HTTPS is much easier. Otherwise, no excuse.
+#[cfg(test)]
+const HTTPS_ONLY: bool = false;
+#[cfg(not(test))]
+const HTTPS_ONLY: bool = true;
+
 /// Sent over the wire when [ExternalRequester] makes requests.
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"),);
 
+// Hoisted because these are used in test code and normal code
 const ORS_DIRECTIONS_PATH: &str = "/v2/directions/driving-car/geojson";
 const PHOTON_PATH: &str = "/api/";
 const PHOTON_REVERSE_PATH: &str = "/reverse";
@@ -143,7 +150,7 @@ impl ExternalRequesterBuilder {
             client: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(Duration::from_secs(10))
-                .https_only(true)
+                .https_only(HTTPS_ONLY)
                 .build()
                 .unwrap_or_else(|e| panic!("couldn't build reqwest Client: {:?}", e)),
             open_route_service_key: self.open_route_service_key,
@@ -219,7 +226,9 @@ impl ExternalRequester {
             .json(req)
             .send()
             .await?;
-        let obj = res.json::<geojson::FeatureCollection>().await?;
+
+        let good_res = Self::check_limiting_status(res, &self.ors_retry_after)?;
+        let obj = good_res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
     }
 
@@ -233,7 +242,7 @@ impl ExternalRequester {
     #[instrument(skip(self))]
     pub async fn photon_reverse_send(
         &self,
-        coord: PhotonRevGeocodeRequest,
+        coord: &PhotonRevGeocodeRequest,
     ) -> Result<geojson::FeatureCollection> {
         self.photon_retry_after.can_request()?; // Checks for backoff period
         self.check_photon_limit(1)?; // Checks our own ratelimiter
@@ -244,7 +253,10 @@ impl ExternalRequester {
             .query(&q)
             .send()
             .await?;
-        let obj = res.json::<geojson::FeatureCollection>().await?;
+
+        // This checks if we need to set a backoff period in response to this call
+        let good_res = Self::check_limiting_status(res, &self.photon_retry_after)?;
+        let obj = good_res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
     }
 
@@ -268,14 +280,15 @@ impl ExternalRequester {
             .query(req)
             .send()
             .await?;
-        let obj = res.json::<geojson::FeatureCollection>().await?;
+
+        let good_res = Self::check_limiting_status(res, &self.photon_retry_after)?;
+        let obj = good_res.json::<geojson::FeatureCollection>().await?;
         Ok(obj)
     }
 
     // Originally this was intended for pub use in routes where we may know that we want more than
     // 1 request, but that's bad ergonomics and we have no routes which even use that yet
-    /// ?-able wrapper of [LimitChain::try_consume] that lets us short-circuit to an error response
-    /// with the appropriate `Instant` indicating when the limit might reset.
+    // Wraps the generic [Instant] error in something usable by the web server directly
     fn check_photon_limit(&self, n: u32) -> Result<()> {
         self.photon_limiter
             .try_consume(n)
@@ -285,7 +298,6 @@ impl ExternalRequester {
     /// Checks if the response indicates a rate limit (429/503) and sets the backoff accordingly.
     /// Returns `Err(RouteError::ExternalAPILimit)` if backoff was triggered, otherwise Ok(response).
     fn check_limiting_status(
-        &self,
         resp: reqwest::Response,
         backer_off: &BackerOff,
     ) -> Result<reqwest::Response> {
@@ -327,4 +339,23 @@ impl ExternalRequester {
             Ok(resp)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Don't cares: timeout/weird resets/etc (reqwest handles), edge-cases of ratelimit/retry_after
+    // (better handled as unit test there)
+
+    // Make 2-3 requests within limit bounds
+
+    // Get a 429 with valid retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get a 503 with no retry-after. Ensure a request made within the time fails, and one after
+    // doesn't.
+
+    // Get an internal server error. what happens?
+
+    // Exceed the rate limit. Wait for reset. Make good requests.
 }
