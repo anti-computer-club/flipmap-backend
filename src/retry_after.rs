@@ -1,19 +1,19 @@
 //! Implements lock-free state keeping for when to allow the next request after an HTTP 503 or 429
 //! response. Uses supplied time from Retry-After, or a TBD backoff algorithm otherwise
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use crate::error::RouteError;
 use arc_swap::ArcSwapOption;
 use httpdate::parse_http_date;
-#[cfg(not(test))]
 use std::time::SystemTime;
+use tokio::time::{Duration, Instant};
 use tracing::instrument;
 
-// TODO: please find a better name im begging you (me)
+/// In lieu of a proper algorithm, we wait this long if the server sends a backoff worthy response
+/// without a Retry-After header
+const HEADERLESS_BACKOFF_TIME: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Default)]
 pub struct BackerOff {
     /// Solely for logging
@@ -24,7 +24,6 @@ pub struct BackerOff {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    //TODO: Why am I getting dead-coded here
     #[error("failed to parse input {0} to header")]
     ParseFail(String),
     #[error("parsed input represents a time already passed")]
@@ -69,7 +68,7 @@ impl BackerOff {
     /// so currently it's just a 30s pause.
     pub fn set_without_header(&self) {
         //TODO: Stateful backoff?
-        let later = Instant::now() + Duration::from_secs(30);
+        let later = Instant::now() + HEADERLESS_BACKOFF_TIME;
         self.set_retry_until(later);
     }
 
@@ -169,132 +168,45 @@ mod time_mock {
 
 #[cfg(test)]
 mod tests {
+    use httpdate::fmt_http_date;
+    use tokio::time;
+
     use super::*;
-    // TODO: The 'past' tests don't actually test exactly that (since we get None for fails to
-    // parse also) the future tests prove that isn't currently issue, but that still isn't great
-    // practice
 
-    // Any non-negative decimal integer should be parsable to seconds according to RFC9110 10.2.3
-    #[test]
-    fn parse_retry_value_seconds_60() {
+    #[tokio::test(start_paused = true)]
+    async fn block_without_header() {
         let backer = BackerOff::new();
-        assert_eq!(
-            backer.parse_retry_value("60").unwrap(),
-            Duration::from_secs(60)
-        );
+        backer.set_without_header();
+        dbg!(&backer, tokio::time::Instant::now());
+        assert!(backer
+            .can_request()
+            .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
+        time::advance(HEADERLESS_BACKOFF_TIME + Duration::from_millis(100)).await;
+        assert!(backer.can_request().is_ok());
     }
 
-    #[test]
-    fn parse_retry_value_seconds_120() {
+    #[tokio::test(start_paused = true)]
+    async fn block_with_int_header() {
         let backer = BackerOff::new();
-        assert_eq!(
-            backer.parse_retry_value("120").unwrap(),
-            Duration::from_secs(120)
-        );
+        assert!(backer.parse_maybe_set("60").is_ok());
+        assert!(backer
+            .can_request()
+            .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
+        time::advance(Duration::from_secs(60)).await;
+        assert!(backer.can_request().is_ok());
     }
 
-    #[test]
-    fn parse_retry_value_seconds_0() {
-        let backer = BackerOff::new();
-        assert_eq!(
-            backer.parse_retry_value("0").unwrap(),
-            Duration::from_secs(0)
-        );
-    }
+    #[tokio::test(start_paused = true)]
+    async fn block_with_httpdate_header() {
+        let until = SystemTime::now() + Duration::from_secs(20);
+        let str_until = fmt_http_date(until);
 
-    #[test]
-    fn parse_retry_value_seconds_u64_max() {
         let backer = BackerOff::new();
-        let max_str = u64::MAX.to_string();
-        assert_eq!(
-            backer.parse_retry_value(&max_str).unwrap(),
-            Duration::from_secs(u64::MAX)
-        );
-    }
-
-    // So, not this one
-    #[test]
-    fn parse_retry_value_seconds_negative() {
-        let backer = BackerOff::new();
-        // u64::from_str will fail, resulting in None
-        assert!(matches!(
-            backer.parse_retry_value("-60").unwrap_err(),
-            Error::ParseFail(_)
-        ));
-    }
-
-    // IMF-fixdate is the preferred HTTP-date format according to RFC9110 5.6.7
-    #[test]
-    fn parse_retry_value_imf_future() {
-        let backer = BackerOff::new();
-        // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
-        // This is 1 hour (3600 seconds) after mock time
-        let future_date = "Mon, 01 Jan 2001 10:30:00 GMT";
-        assert_eq!(
-            backer.parse_retry_value(future_date).unwrap(),
-            Duration::from_secs(3600)
-        );
-    }
-
-    #[test]
-    fn parse_retry_value_imf_past() {
-        let backer = BackerOff::new();
-        // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
-        // This is 1 hour before mock time
-        let past_date = "Mon, 01 Jan 2001 08:30:00 GMT";
-        assert!(matches!(
-            backer.parse_retry_value(past_date).unwrap_err(),
-            Error::FromPast
-        ));
-    }
-
-    // RFC850 (Usenet!) format is one of two accepted obsolete types
-    #[test]
-    fn parse_retry_value_rfc850_future() {
-        let backer = BackerOff::new();
-        // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
-        // This is 1 hour (3600 seconds) after mock time
-        let future_date = "Monday, 01-Jan-01 10:30:00 GMT";
-        assert_eq!(
-            backer.parse_retry_value(future_date).unwrap(),
-            Duration::from_secs(3600)
-        );
-    }
-
-    #[test]
-    fn parse_retry_value_rfc850_past() {
-        let backer = BackerOff::new();
-        // Mock time is Mon, 1 Jan 2001 09:30:00 +0000
-        // This is 1 hour before mock time
-        let past_date = "Monday, 01-Jan-01 08:30:00 GMT";
-        assert!(matches!(
-            backer.parse_retry_value(past_date).unwrap_err(),
-            Error::FromPast
-        ));
-    }
-
-    // `asctime` format is the other one
-    #[test]
-    fn parse_retry_value_asctime_future() {
-        let backer = BackerOff::new();
-        // Mock time is Mon Jan  1 09:30:00 2001
-        // This is 1 hour (3600 seconds) after mock time
-        let future_date = "Mon Jan  1 10:30:00 2001";
-        assert_eq!(
-            backer.parse_retry_value(future_date).unwrap(),
-            Duration::from_secs(3600)
-        );
-    }
-
-    #[test]
-    fn parse_retry_value_asctime_past() {
-        let backer = BackerOff::new();
-        // Mock time is Mon Jan  1 09:30:00 2001
-        // This is 1 hour before mock time
-        let past_date = "Mon Jan  1 08:30:00 2001";
-        assert!(matches!(
-            backer.parse_retry_value(past_date).unwrap_err(),
-            Error::FromPast
-        ));
+        assert!(backer.parse_maybe_set(str_until.as_str()).is_ok());
+        assert!(backer
+            .can_request()
+            .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
+        time::advance(Duration::from_secs(20)).await;
+        assert!(backer.can_request().is_ok());
     }
 }

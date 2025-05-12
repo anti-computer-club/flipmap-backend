@@ -2,7 +2,7 @@
 //!
 //! On creation, it should trace all information that's safe and relevant
 //! It can also be serialized into a response that won't give too much information to the client
-use std::time::Instant;
+use tokio::time::Instant;
 
 use axum::{
     extract::rejection::JsonRejection,
