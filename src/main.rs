@@ -19,6 +19,8 @@ mod error;
 mod ratelimit;
 mod requester;
 mod retry_after;
+#[cfg(test)]
+mod test_utils;
 use crate::error::RouteError;
 use crate::requester::{ExternalRequester, OpenRouteRequest, PhotonGeocodeRequest};
 

@@ -149,24 +149,6 @@ impl BackerOff {
 }
 
 #[cfg(test)]
-use time_mock::SystemTime;
-
-#[cfg(test)]
-mod time_mock {
-    use std::time::{self, Duration};
-
-    pub struct SystemTime {}
-    impl SystemTime {
-        pub fn now() -> time::SystemTime {
-            // Trust me bro
-            const JAN_1_2001_9_30_AM: u64 = 978_341_400;
-            const DELTA: Duration = Duration::from_secs(JAN_1_2001_9_30_AM);
-            time::SystemTime::UNIX_EPOCH + DELTA
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use httpdate::fmt_http_date;
     use tokio::time;

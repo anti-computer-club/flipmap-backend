@@ -224,21 +224,11 @@ impl<'a> LimitChain<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::timey_wime_check;
     use tokio::{
         task,
         time::{self, Duration},
     };
-
-    /// They say that monotonic clocks are monotonic. Duh. I say: why do two calls in my test code jump
-    /// back hundreds of nanoseconds?
-    ///
-    /// This function checks if two instants are equal *enough*
-    fn timey_wime_check(a: Instant, b: Instant) -> bool {
-        const WIBBLE_FACTOR: Duration = Duration::from_millis(1);
-        let before = b - WIBBLE_FACTOR;
-        let after = b + WIBBLE_FACTOR;
-        a > before && a < after
-    }
 
     /// Basic operation of a [RateLimit]: can we use all (and no further), but then use again after
     /// the refresh period has passed?
@@ -322,7 +312,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn exhaust_multiple() {
         let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
-
         assert!(limit.try_consume(3).is_ok());
         assert!(limit.try_consume(2).is_ok());
         assert!(limit.try_consume(1).is_err()); // Should fail now
