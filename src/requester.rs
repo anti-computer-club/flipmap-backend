@@ -371,6 +371,7 @@ mod tests {
             .build()
     }
 
+    // These match the examples
     fn geocode_request() -> PhotonGeocodeRequest {
         PhotonGeocodeRequest {
             limit: 10,
@@ -392,22 +393,24 @@ mod tests {
 
     // Make requests within Photon limit bounds. Should work until it doesn't. Doesn't need mock
     // state because the limit is self-imposed
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test()]
     async fn photon_ratelimit_test() {
-        let server = MockServer::start();
+        let server = MockServer::start_async().await;
         let resp_body: Value = serde_json::from_str(PHOTON_EXAMPLE).unwrap();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path(PHOTON_PATH)
-                .query_param_exists("limit")
-                .query_param_exists("q")
-                .query_param_exists("lat")
-                .query_param_exists("lon");
-            then.status(200)
-                // There's other headers that could be interesting, but aren't immediately relevant
-                .header("Content-Type", "application/json;charset=utf-8")
-                .json_body(resp_body);
-        });
+        server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path(PHOTON_PATH)
+                    .query_param_exists("limit")
+                    .query_param_exists("q")
+                    .query_param_exists("lat")
+                    .query_param_exists("lon");
+                then.status(200)
+                    // There's other headers that could be interesting, but aren't immediately relevant
+                    .header("Content-Type", "application/json;charset=utf-8")
+                    .json_body(resp_body);
+            })
+            .await;
 
         let reqr = gen_tester_requester(server.address().to_string());
         let gr = geocode_request();
@@ -417,8 +420,10 @@ mod tests {
             .photon_send(&gr)
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
-        // Yes boss the unit tests are so heavy they take time to run
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        time::pause();
+        time::advance(Duration::from_secs(1)).await;
+        task::yield_now().await; // httpmock doesn't like this buffoonery
+        time::resume();
         assert!(reqr.photon_send(&gr).await.is_ok());
         assert!(reqr.photon_send(&gr).await.is_ok());
         assert!(reqr
@@ -429,19 +434,21 @@ mod tests {
 
     // Get a 429 with valid retry-after. Ensure a request made within the time fails, and one after
     // doesn't. In reality we have Access-Control-Expose-Headers we could use, but we don't
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test()]
     async fn overloaded_ors() {
         // We're going to fake a stateful mock by swapping in different mocks on the same port
-        let server = MockServer::start();
+        let server = MockServer::start_async().await;
         let resp_body: Value = serde_json::from_str(ORS_DIRECTIONS_EXAMPLE).unwrap();
         // In truth, I don't know what the real server will exactly respond.
-        let mut tired_server = server.mock(|when, then| {
-            when.method(POST).path(ORS_DIRECTIONS_PATH);
-            then.status(429).header(
-                "Retry-After",
-                fmt_http_date(SystemTime::now() + Duration::from_secs(1)),
-            );
-        });
+        let mut tired_server = server
+            .mock_async(|when, then| {
+                when.method(POST).path(ORS_DIRECTIONS_PATH);
+                then.status(429).header(
+                    "Retry-After",
+                    fmt_http_date(SystemTime::now() + Duration::from_secs(1)),
+                );
+            })
+            .await;
 
         let mut reqr = gen_tester_requester(tired_server.server_address().to_string());
         let or = route_request();
@@ -454,12 +461,14 @@ mod tests {
 
         // Pretend this is a stateful mock and not just two mocks in a trenchcoat
         tired_server.delete();
-        let wired_server = server.mock(|when, then| {
-            when.method(POST).path(ORS_DIRECTIONS_PATH);
-            then.status(200)
-                .header("Content-Type", "application/geo+json;charset=UTF-8")
-                .json_body(resp_body);
-        });
+        let wired_server = server
+            .mock_async(|when, then| {
+                when.method(POST).path(ORS_DIRECTIONS_PATH);
+                then.status(200)
+                    .header("Content-Type", "application/geo+json;charset=UTF-8")
+                    .json_body(resp_body);
+            })
+            .await;
         // This wouldn't work in a real intergration test, and it wouldn't be needed either
         reqr.ors_directions =
             Url::parse(format!("http://{}", wired_server.server_address()).as_str())
@@ -472,15 +481,18 @@ mod tests {
             .ors_send(&or)
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        time::pause();
+        time::advance(Duration::from_secs(2)).await;
+        task::yield_now().await; // httpmock doesn't like this buffoonery
+        time::resume();
         assert!(reqr.ors_send(&or).await.is_ok());
     }
 
     // Get a 503 with no retry-after. Ensure a request made within the time fails, and one after
-    // doesn't. Paused so we don't have to wait out the hard-coded production delay
+    // doesn't.
     #[tokio::test()]
     async fn headerless_overload() {
-        let server = MockServer::start();
+        let server = MockServer::start_async().await;
         let resp_body: Value = serde_json::from_str(ORS_DIRECTIONS_EXAMPLE).unwrap();
         // In truth, I don't know what the real server will exactly respond.
         let mut tired_server = server.mock(|when, then| {
@@ -499,12 +511,14 @@ mod tests {
 
         // Pretend this is a stateful mock and not just two mocks in a trenchcoat
         tired_server.delete();
-        let wired_server = server.mock(|when, then| {
-            when.method(POST).path(ORS_DIRECTIONS_PATH);
-            then.status(200)
-                .header("Content-Type", "application/geo+json;charset=UTF-8")
-                .json_body(resp_body);
-        });
+        let wired_server = server
+            .mock_async(|when, then| {
+                when.method(POST).path(ORS_DIRECTIONS_PATH);
+                then.status(200)
+                    .header("Content-Type", "application/geo+json;charset=UTF-8")
+                    .json_body(resp_body);
+            })
+            .await;
         // This wouldn't work in a real intergration test, and it wouldn't be needed either
         reqr.ors_directions =
             Url::parse(format!("http://{}", wired_server.server_address()).as_str())
@@ -520,6 +534,7 @@ mod tests {
         time::pause();
         time::advance(retry_after::HEADERLESS_BACKOFF_TIME).await;
         task::yield_now().await; // httpmock doesn't like this buffoonery
+        time::resume();
         assert!(reqr.ors_send(&or).await.is_ok());
     }
 }
