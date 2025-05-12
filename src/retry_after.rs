@@ -12,7 +12,7 @@ use tracing::instrument;
 
 /// In lieu of a proper algorithm, we wait this long if the server sends a backoff worthy response
 /// without a Retry-After header
-const HEADERLESS_BACKOFF_TIME: Duration = Duration::from_secs(30);
+pub const HEADERLESS_BACKOFF_TIME: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 pub struct BackerOff {
