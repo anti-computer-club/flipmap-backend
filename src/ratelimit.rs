@@ -224,20 +224,17 @@ impl<'a> LimitChain<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::timey_wime_check;
-    use tokio::{
-        task,
-        time::{self, Duration},
-    };
+    use crate::test_utils::{timey_wime_check, SHORT_WAIT};
+    use tokio::{task, time};
 
     /// Basic operation of a [RateLimit]: can we use all (and no further), but then use again after
     /// the refresh period has passed?
     #[tokio::test(start_paused = true)]
     async fn exhaust_and_refresh() {
-        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
+        let limit = RateLimit::new(5, SHORT_WAIT, "Test!".to_string());
 
         let start_time = Instant::now();
-        let expected_reset = start_time + Duration::from_secs(1);
+        let expected_reset = start_time + SHORT_WAIT;
 
         // Exhaust limit
         for _ in 0..5 {
@@ -255,8 +252,9 @@ mod tests {
         // is something of an incantation for me. I wish I knew what was going on.
         // Remove one and see. I dare you.
         task::yield_now().await;
-        time::advance(Duration::from_secs(1)).await;
+        time::advance(SHORT_WAIT).await;
         task::yield_now().await;
+        time::resume();
 
         // Verify we've reset time
         assert!(limit.try_consume(1).is_ok());
@@ -266,10 +264,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn chain_exhaust_and_refresh() {
         let start_time = Instant::now();
-        let expected_reset = start_time + Duration::from_secs(1);
+        let expected_reset = start_time + SHORT_WAIT;
         let limits = [
-            RateLimit::new(5, Duration::from_secs(1), "Test!".to_string()),
-            RateLimit::new(3, Duration::from_secs(1), "Test2!".to_string()),
+            RateLimit::new(5, SHORT_WAIT, "Test!".to_string()),
+            RateLimit::new(3, SHORT_WAIT, "Test2!".to_string()),
         ];
         let chain = LimitChain::new_from(&limits);
 
@@ -298,8 +296,9 @@ mod tests {
         }
 
         task::yield_now().await;
-        time::advance(Duration::from_secs(1)).await;
+        time::advance(SHORT_WAIT).await;
         task::yield_now().await;
+        time::resume();
 
         // Verify we've reset time - both limits should allow consumption now
         assert!(chain.try_consume(1).is_ok());
@@ -309,18 +308,18 @@ mod tests {
     }
 
     /// Can we consume more than one from the [RateLimit] quota at once?
-    #[tokio::test(start_paused = true)]
+    #[tokio::test()]
     async fn exhaust_multiple() {
-        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
+        let limit = RateLimit::new(5, SHORT_WAIT, "Test!".to_string());
         assert!(limit.try_consume(3).is_ok());
         assert!(limit.try_consume(2).is_ok());
         assert!(limit.try_consume(1).is_err()); // Should fail now
     }
 
     /// I prompted this so I'll just keep it. We've got a serious problem if it breaks
-    #[tokio::test(start_paused = true)]
+    #[tokio::test()]
     async fn test_zero_consumption() {
-        let limit = RateLimit::new(5, Duration::from_secs(1), "Test!".to_string());
+        let limit = RateLimit::new(5, SHORT_WAIT, "Test!".to_string());
         assert!(limit.try_consume(0).is_ok()); // Should always succeed with Ok(())
     }
 }

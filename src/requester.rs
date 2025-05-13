@@ -349,6 +349,7 @@ impl ExternalRequester {
 mod tests {
     use super::*;
     use crate::retry_after;
+    use crate::test_utils::{LONG_WAIT, SHORT_WAIT};
 
     use httpdate::fmt_http_date;
     use httpmock::prelude::*;
@@ -366,8 +367,8 @@ mod tests {
         let base = reqwest::Url::parse(&stringly_base)
             .unwrap_or_else(|_| panic!("couldn't unwrap {stringly_base}")); // it's giving golang
         ExternalRequesterBuilder::new(base.clone(), base, SecretString::from("foo"))
-            .with_photon_ratelimiter(2, Duration::from_secs(1), "short boy".to_string())
-            .with_photon_ratelimiter(4, Duration::from_secs(3), "long boy".to_string())
+            .with_photon_ratelimiter(2, SHORT_WAIT, "short boy".to_string())
+            .with_photon_ratelimiter(4, LONG_WAIT, "long boy".to_string())
             .build()
     }
 
@@ -421,9 +422,9 @@ mod tests {
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
         time::pause();
-        time::advance(Duration::from_secs(1)).await;
-        task::yield_now().await; // httpmock doesn't like this buffoonery
+        time::advance(SHORT_WAIT).await;
         time::resume();
+        task::yield_now().await; // Needs to be used in tests with ratelimiter b/c of reset task
         assert!(reqr.photon_send(&gr).await.is_ok());
         assert!(reqr.photon_send(&gr).await.is_ok());
         assert!(reqr
@@ -440,13 +441,11 @@ mod tests {
         let server = MockServer::start_async().await;
         let resp_body: Value = serde_json::from_str(ORS_DIRECTIONS_EXAMPLE).unwrap();
         // In truth, I don't know what the real server will exactly respond.
-        let mut tired_server = server
+        let tired_server = server
             .mock_async(|when, then| {
                 when.method(POST).path(ORS_DIRECTIONS_PATH);
-                then.status(429).header(
-                    "Retry-After",
-                    fmt_http_date(SystemTime::now() + Duration::from_secs(1)),
-                );
+                then.status(429)
+                    .header("Retry-After", fmt_http_date(SystemTime::now() + SHORT_WAIT));
             })
             .await;
 
@@ -458,9 +457,10 @@ mod tests {
             .ors_send(&or)
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
+        time::pause();
 
         // Pretend this is a stateful mock and not just two mocks in a trenchcoat
-        tired_server.delete();
+        tired_server.delete_async().await;
         let wired_server = server
             .mock_async(|when, then| {
                 when.method(POST).path(ORS_DIRECTIONS_PATH);
@@ -476,13 +476,13 @@ mod tests {
                 .join(ORS_DIRECTIONS_PATH)
                 .unwrap_or_else(|e| panic!("couldn't merge mock base address with path: {e:?}"));
 
-        // More of a test of whether it takes more than 1 seconds to make a mock and request
+        time::resume();
         assert!(reqr
             .ors_send(&or)
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
         time::pause();
-        time::advance(Duration::from_secs(2)).await;
+        time::advance(SHORT_WAIT).await;
         task::yield_now().await; // httpmock doesn't like this buffoonery
         time::resume();
         assert!(reqr.ors_send(&or).await.is_ok());
@@ -508,6 +508,7 @@ mod tests {
             .ors_send(&or)
             .await
             .is_err_and(|x| matches!(x, RouteError::ExternalAPILimit(_))));
+        time::pause();
 
         // Pretend this is a stateful mock and not just two mocks in a trenchcoat
         tired_server.delete();
@@ -526,7 +527,7 @@ mod tests {
                 .join(ORS_DIRECTIONS_PATH)
                 .unwrap_or_else(|e| panic!("couldn't merge mock base address with path: {e:?}"));
 
-        // More of a test of whether it takes more than 1 seconds to make a mock and request
+        time::resume();
         assert!(reqr
             .ors_send(&or)
             .await

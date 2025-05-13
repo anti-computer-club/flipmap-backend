@@ -16,3 +16,6 @@ pub fn timey_wime_check(a: Instant, b: Instant) -> bool {
     let after = b + WIBBLE_FACTOR;
     a > before && a < after
 }
+
+pub const SHORT_WAIT: Duration = Duration::from_secs(30);
+pub const LONG_WAIT: Duration = Duration::from_secs(90);
