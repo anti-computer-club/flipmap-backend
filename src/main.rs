@@ -16,7 +16,11 @@ use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::Subsc
 use validator::Validate;
 
 mod error;
+mod ratelimit;
 mod requester;
+mod retry_after;
+#[cfg(test)]
+mod test_utils;
 use crate::error::RouteError;
 use crate::requester::{ExternalRequester, OpenRouteRequest, PhotonGeocodeRequest};
 
@@ -66,12 +70,10 @@ struct Opt {
     // I'd put the API key here but clap purposely seems to deny the ability to ONLY allow w/ env
 }
 
-#[tokio::main]
-async fn main() {
+fn tracing_subscribe() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                //TODO: tune later after seeing what's interesting on not-happy path
                 format!(
                     "{}=debug,tower_http=debug,axum=trace,hyper_util=warn",
                     env!("CARGO_CRATE_NAME")
@@ -85,6 +87,11 @@ async fn main() {
                 .with_thread_ids(true),
         )
         .init();
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscribe();
 
     let ors_key: secrecy::SecretString = env::var("ORS_API_KEY")
         .expect("Place an Open Route Service API key in ORS_API_KEY env variable!")

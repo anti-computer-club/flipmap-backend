@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 # Web & Async I/O framework
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
-tokio = { version = "1.43.0", features = ["full"] }
+tokio = { version = "1.43.0", features = ["full", "test-util"] }
 # Calls external APIs
 reqwest = { version = "0.12.12", features = ["json"] }
 # External APIs all speak this, but we don't send it to our client
@@ -23,3 +23,12 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 # Makes it easy to add constraints to requests
 validator = { version = "0.20.0", features = ["derive"] }
 clap = { version = "4.5.29", features = ["derive", "env"] }
+# Used to make retry-after lock free
+arc-swap = "1.7.1"
+# Parses dates for retry_after
+httpdate = "1.0.3"
+# Required for utility code to be *real libraries* or something
+thiserror = "2.0.12"
+
+[dev-dependencies]
+httpmock = "0.7.0"
