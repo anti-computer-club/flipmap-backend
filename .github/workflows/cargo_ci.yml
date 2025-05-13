@@ -1,0 +1,29 @@
+name: Cargo CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy_and_test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --verbose
+      - name: Clippy Lint
+        run: cargo clippy -- -Dwarnings
+      - name: Unit Test
+        run: cargo test --verbose
+
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Formatting Check
+        run: cargo fmt -v --check --all
