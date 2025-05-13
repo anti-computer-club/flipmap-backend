@@ -8,7 +8,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  clippy_and_test:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,7 +17,13 @@ jobs:
         run: cargo build --verbose
       - name: Clippy Lint
         run: cargo clippy -- -Dwarnings
-      - name: Cargo Format Check
-        run: cargo fmt -v --check --all
       - name: Unit Test
         run: cargo test --verbose
+
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Formatting Check
+        run: cargo fmt -v --check --all
