@@ -28,6 +28,7 @@ services:
       - "127.0.0.1:2019:2019"
     volumes:
       - caddy_data:/data
+      - /srv/caddy-config/:/srv/caddy-config/
 
 volumes:
   # 'Not a Cache' purging will remove certs, OCSP staples, etc
