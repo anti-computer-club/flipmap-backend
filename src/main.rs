@@ -128,10 +128,13 @@ async fn main() {
 #[derive(Deserialize, Debug, Validate)]
 pub struct RouteRequest {
     #[validate(range(min=-90.0, max=90.0))]
-    pub lat: f64,
+    pub src_lat: f64,
     #[validate(range(min=-180.0, max=180.0))]
-    pub lon: f64,
-    pub query: String,
+    pub src_lon: f64,
+    #[validate(range(min=-90.0, max=90.0))]
+    pub dst_lat: f64,
+    #[validate(range(min=-180.0, max=180.0))]
+    pub dst_lon: f64,
 }
 
 #[derive(Serialize)]
@@ -140,35 +143,14 @@ pub struct RouteResponse {
     pub route: Vec<f64>,
 }
 
-/// Proof-of-concept route that turns anchor locations + query into routes.
+/// Simple point-to-point route that takes a single starting and ending position.
 #[instrument(level = "debug", skip(client))]
 async fn route(
     State(client): State<Arc<ExternalRequester>>,
     ValidatedJson(params): ValidatedJson<RouteRequest>,
 ) -> Result<ValidatedJson<RouteResponse>> {
-    // First request to know where to ask for the route's end waypoint
-    let req = PhotonGeocodeRequest::new(1, params.query).with_location_bias(params.lat, params.lon);
-    let features = client.photon_send(&req).await?;
-    // All we want is the coordinates of the point. FeatureCollection -> Feature -> Point
-    // Failing to find a geometry, or a point in the geometry is an error
-    // ASSUMPTION: geojson will fail to parse if the FeatureCollection has no Feature
-    let geometry = features.features[0].geometry.as_ref().ok_or_else(|| {
-        RouteError::new_external_parse_failure(
-            "failed to find geometry in Photon response".to_owned(),
-        )
-    })?;
-    let end_coord: Position = match &geometry.value {
-        geojson::Value::Point(x) => x.clone(),
-        v => {
-            return Err(RouteError::new_external_parse_failure(format!(
-                "found {} geojson datatype instead of Point in Photon response geometry",
-                v.type_name()
-            )))
-        }
-    };
-
-    // Second request to actually get the route
-    let start_coord: Position = vec![params.lon, params.lat];
+    let start_coord: Position = vec![params.src_lon, params.src_lat];
+    let end_coord: Position = vec![params.dst_lon, params.dst_lat];
     let req = OpenRouteRequest {
         instructions: false,
         coordinates: vec![start_coord, end_coord],
