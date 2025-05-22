@@ -177,7 +177,6 @@ async fn route(
     Ok(ValidatedJson(RouteResponse { route }))
 }
 
-///preet
 #[derive(Deserialize, Debug, Validate)]
 pub struct GetLocationsRequest {
     #[validate(range(min=-90.0, max=90.0))]
@@ -201,6 +200,7 @@ pub struct PlaceResult {
     pub name: String,
 }
 
+/// Used by the app to search out locations from a given position
 #[instrument(level = "debug", skip(client))]
 async fn get_locations(
     State(client): State<Arc<ExternalRequester>>,
