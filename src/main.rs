@@ -17,8 +17,10 @@ use validator::Validate;
 
 mod error;
 mod ratelimit;
-mod requester;
 mod retry_after;
+//TODO: Reverse geocoding is ready but no route exists here & app FE is not ready
+#[allow(dead_code)]
+mod requester;
 #[cfg(test)]
 mod test_utils;
 use crate::error::RouteError;
@@ -111,6 +113,7 @@ async fn main() {
 
     let app: Router = Router::new()
         .route("/route", post(route))
+        .route("/get_locations", post(get_locations))
         .with_state(client)
         .layer(TraceLayer::new_for_http());
 
@@ -190,4 +193,75 @@ async fn route(
     .flatten()
     .collect();
     Ok(ValidatedJson(RouteResponse { route }))
+}
+
+///preet
+#[derive(Deserialize, Debug, Validate)]
+pub struct GetLocationsRequest {
+    #[validate(range(min=-90.0, max=90.0))]
+    pub lat: f64,
+    #[validate(range(min=-180.0, max=180.0))]
+    pub lon: f64,
+    pub query: String,
+    #[validate(range(min = 1, max = 20))]
+    pub amount: u8,
+}
+
+#[derive(Serialize)]
+pub struct GetLocationsResponse {
+    pub results: Vec<PlaceResult>,
+}
+
+#[derive(Serialize)]
+pub struct PlaceResult {
+    pub lat: f64,
+    pub lon: f64,
+    pub name: String,
+}
+
+#[instrument(level = "debug", skip(client))]
+async fn get_locations(
+    State(client): State<Arc<ExternalRequester>>,
+    ValidatedJson(params): ValidatedJson<GetLocationsRequest>,
+) -> Result<ValidatedJson<GetLocationsResponse>> {
+    let req = PhotonGeocodeRequest::new(params.amount, params.query)
+        .with_location_bias(params.lat, params.lon);
+    let features = client.photon_send(&req).await?;
+
+    let results = features
+        .features
+        .iter()
+        .map(|feature| {
+            let geometry = feature.geometry.as_ref().ok_or_else(|| {
+                RouteError::new_external_parse_failure(
+                    "failed to find geometry in Photon response".to_owned(),
+                )
+            })?;
+            let coords: Position = match &geometry.value {
+                geojson::Value::Point(x) => x.clone(),
+                v => {
+                    return Err(RouteError::new_external_parse_failure(format!(
+                        "found {} geojson datatype instead of Point in Photon response geometry",
+                        v.type_name()
+                    )))
+                }
+            };
+
+            let name = feature
+                .properties
+                .as_ref() // Ensure properties is not None
+                .and_then(|properties| properties.get("name")) // Try to get "name" from properties
+                .and_then(|value| value.as_str()) // Convert the Value to &str (if it is a string)
+                .unwrap_or("Unknown") // If "name" doesn't exist or is not a string, use "Unknown"
+                .to_string(); // Convert the &str to String
+
+            Ok(PlaceResult {
+                lat: coords[1],
+                lon: coords[0],
+                name,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(ValidatedJson(GetLocationsResponse { results }))
 }
