@@ -96,10 +96,16 @@ Tracing is enabled by default, but filters out some detail for brevity. Set the 
 The error messages returned to the client will purposely not describe the specifics of internal failures. The error messages raised internally also may currently not log enough useful information. See the documentation `cargo doc --bins --document-private-items --open`
 and refer to the `error.rs` enum `RouteError` for the most-up-to-date information on possible errors.
 
+## Rate-Limiting
+
+The application keeps internal state and timers in order to accurately rate-limit _external_ requests to APIs. It will heed well-formed `Retry-After` headers or set a static 'back-off' timer when they are not well-formed or when there is no header provided for an HTTP 429/503 request.
+
+Because Komoot's Photon instance does not have a rate-limit, we also have an internal fixed-window implementation that hard-codes a by-minute and by-day limit on par with OpenRouteService's. This is subject to change.
+
 ## Deployment Consideration
 
 This application expects to be able to make HTTPS requests to API endpoints. Errors will naturally result if firewalls or other configurations get in the way.
 
-TLS for connecting clients, and rate-limiting anywhere are not implemented in the application. **It's strongly recommended to put the application behind a rate-limiting reverse proxy such as NGINX or Caddy.** Future functionality for inbuilt rate-limiting to external APIs is planned, but client-facing rate limiting should be accomplished elsewhere.
+Neither TLS nor rate-limiting _for clients_ are implemented in the application. **It's strongly recommended to put the application behind a rate-limiting reverse proxy such as NGINX or Caddy.**
 
-Containerization is supported as a first-class deployment method. Provided the TLS backend is present (see: Requirements), the effort to have full functionality should be minimal. An example Dockerfile may be provided in this repository.
+Containerization is supported as a first-class deployment method. Provided the TLS backend is present (see: Requirements), the effort to have full functionality should be minimal. Our production environment has multiple services on the reverse-proxy, so the files in this repository are not a _minimally viable_ example deployment, but they are quite simple. See `application.dockerfile`, `Caddyfile-backend`, and `compose.yaml` along with the Github deploy action for more.
