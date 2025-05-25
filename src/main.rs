@@ -18,7 +18,7 @@ use validator::Validate;
 mod error;
 mod ratelimit;
 mod retry_after;
-//TODO: Reverse geocoding is ready but no route exists here & app FE is not ready
+//TODO: Reverse geocoding is ready but no route exists here & app FE is not ready for it
 #[allow(dead_code)]
 mod requester;
 #[cfg(test)]
@@ -61,9 +61,9 @@ where
 #[derive(clap::Parser, Debug)]
 struct Opt {
     // Tried to make these compile-time dynamic to crate name. Seems impossible w/ stdlib
-    #[arg(env = "HELLO_OSM_IP", value_parser = clap::value_parser!(net::IpAddr))]
+    #[arg(env = "FLIPMAP_BACKEND_IP", value_parser = clap::value_parser!(net::IpAddr))]
     ip: net::IpAddr,
-    #[arg(env = "HELLO_OSM_PORT", value_parser = clap::value_parser!(u16).range(1..=65535))]
+    #[arg(env = "FLIPMAP_BACKEND_PORT", value_parser = clap::value_parser!(u16).range(1..=65535))]
     port: u16,
     #[arg(short,long, value_parser = clap::value_parser!(reqwest::Url), default_value = "https://api.openrouteservice.org")]
     ors_base: reqwest::Url,
@@ -72,6 +72,8 @@ struct Opt {
     // I'd put the API key here but clap purposely seems to deny the ability to ONLY allow w/ env
 }
 
+/// Location independent (just checks environment variable) tracing setup that can be called from
+/// unit tests if desired
 fn tracing_subscribe() {
     tracing_subscriber::registry()
         .with(
@@ -91,6 +93,7 @@ fn tracing_subscribe() {
         .init();
 }
 
+/// Parses command line arguments, sets-up tracing, and begins routing
 #[tokio::main]
 async fn main() {
     tracing_subscribe();
@@ -124,7 +127,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-/// Extracted by [ValidatedJson] after succesful deserialization & validation
+// Extracted by `ValidatedJson` after succesful deserialization & validation
 #[derive(Deserialize, Debug, Validate)]
 pub struct RouteRequest {
     #[validate(range(min=-90.0, max=90.0))]
@@ -184,6 +187,7 @@ pub struct GetLocationsRequest {
     #[validate(range(min=-180.0, max=180.0))]
     pub lon: f64,
     pub query: String,
+    /// Maximum bound. Photon may return less than this.
     #[validate(range(min = 1, max = 20))]
     pub amount: u8,
 }

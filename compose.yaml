@@ -1,11 +1,8 @@
 services:
   backend:
     image: flipmap-backend:latest
-    environment:
-      # Expected from .env interpolation
-      ORS_API_KEY: ${ORS_API_KEY}
-      HELLO_OSM_IP: ${HELLO_OSM_IP}
-      HELLO_OSM_PORT: ${HELLO_OSM_PORT}
+    # Expected from .env interpolation
+    environment: [ORS_API_KEY, FLIPMAP_BACKEND_IP, FLIPMAP_BACKEND_PORT]
     depends_on:
       - caddy
 
@@ -15,7 +12,7 @@ services:
     environment:
       # This gets passed into the Caddyfile
       SITE_ADDRESS: ${SITE_ADDRESS}
-      APP_PORT: ${HELLO_OSM_PORT}
+      APP_PORT: ${FLIPMAP_BACKEND_PORT}
       CADDY_ADMIN: 0.0.0.0:2019
     cap_add:
       # Supposedly improves QUIC perf
