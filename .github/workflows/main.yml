@@ -5,51 +5,68 @@ on:
     branches:
       - main
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
+
+    # For the Github Action token
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Log in to the Container registry
+        # 3.4.0 March 15 2025
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
         with:
-          install: true
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Caddy
-        run: "docker build --load -f caddy.dockerfile -t flipmap-caddy ."
-
-      - name: Build Backend
-        run: "docker build --load -f application.dockerfile -t flipmap-backend ."
-
-      - name: Archive images
-        run: |
-          docker save flipmap-caddy:latest flipmap-backend:latest -o images.tar
-          chmod 664 images.tar
-          
-      - name: Copy to VPS
-        uses: appleboy/scp-action@v0.1.7
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        # v5.7.0 February 26 2025
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "images.tar"
-          target: "~/"
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      - name: Build and push Docker image
+        id: push
+        # v6.18.0 May 28 2025
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  deploy-to-vps:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
       - name: SSH to EC2 and run images
-        uses: appleboy/ssh-action@v0.1.5
+        # March 9 2025, won't bother pinning since it has super sketchy transient dep anyway
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          # Prune (may only work on next connection) overwritten images to not run out of space
-          # images.tar should be over-written anyway but we may as well tidy that too
           script: |
-            docker load -i ~/images.tar
-            rm ~/images.tar
-            cd /srv/flipmap-backend
-            docker-compose down
-            docker-compose up -d
+            docker-compose up -d --no-deps --pull always backend
             docker image prune

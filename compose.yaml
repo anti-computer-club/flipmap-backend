@@ -1,6 +1,6 @@
 services:
   backend:
-    image: flipmap-backend:latest
+    image: ghcr.io/anti-computer-club/flipmap-backend:main
     # Expected from .env interpolation
     environment: [ORS_API_KEY, FLIPMAP_BACKEND_IP, FLIPMAP_BACKEND_PORT]
     depends_on:

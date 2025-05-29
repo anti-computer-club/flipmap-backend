@@ -1,5 +1,5 @@
 # build binary
-FROM rust:1.87.0-bookworm AS builder
+FROM rust:bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
