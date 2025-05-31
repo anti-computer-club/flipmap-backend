@@ -70,5 +70,5 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /srv/
-            docker-compose up -d --no-deps --pull always backend
+            docker compose up -d --no-deps --pull always backend
             docker image prune
