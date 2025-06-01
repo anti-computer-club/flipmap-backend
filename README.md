@@ -6,6 +6,18 @@ Relies on public external API's via OpenRouteService and Photon (hosted by Komoo
 
 Prevents us from having to ship those keys to untrustworthy client devices, and provides convenient input/output that simplifies the phone app.
 
+## License
+
+This repository is licensed under the GNU General Public License Version 2 and any later version.
+
+## Roadmap & Contribution Guidelines
+
+This repository is reasonably mature, but may be refactored significantly to grow with the Android application it supports.
+
+Pull requests for bugfixes are greatly appreciated. Please create an issue to propose significant changes or features before developing them.
+
+For outstanding issues across the project, see the [roadmap Github Project](https://github.com/orgs/anti-computer-club/projects/5)
+
 ## Requirements and Compiling
 
 You may or may not need a suitable 'TLS backend' to build the project (TODO: check this), but you _will_ need one to run it. Most systems should already have this, but lightweight containers may require explicit installation. Ensure OpenSSL (often `libssl`) and the standard CA certificates for the distribution are installed. **Not having these will result in an early runtime panic upon attempting to construct the `ExternalRequester`.**
@@ -108,4 +120,6 @@ This application expects to be able to make HTTPS requests to API endpoints. Err
 
 Neither TLS nor rate-limiting _for clients_ are implemented in the application. **It's strongly recommended to put the application behind a rate-limiting reverse proxy such as NGINX or Caddy.**
 
-Containerization is supported as a first-class deployment method. Provided the TLS backend is present (see: Requirements), the effort to have full functionality should be minimal. Our production environment has multiple services on the reverse-proxy, so the files in this repository are not a _minimally viable_ example deployment, but they are quite simple. See `application.dockerfile`, `Caddyfile-backend`, and `compose.yaml` along with the Github deploy action for more.
+Containerization is supported as a first-class deployment method. Provided the TLS backend is present (see: Requirements), the effort to have full functionality should be minimal.
+
+For an example deployment along with a reverse proxy, see our [deployment repository](https://github.com/anti-computer-club/flipmap-deployment) and the Github Actions of this repository, which were used in production.
