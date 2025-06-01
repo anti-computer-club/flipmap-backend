@@ -1,6 +1,8 @@
 [package]
 name = "flipmap-backend"
 version = "0.1.0"
+license = "GPL-2.0-or-later"
+license-file = "LICENSE"
 edition = "2021"
 
 [dependencies]
