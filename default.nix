@@ -14,7 +14,7 @@ rustPlatform.buildRustPackage rec {
   meta = with lib; {
     description = "Flipmap Backend";
     homepage = "https://github.com/pasimko/flipmap-backend";
-    license = licenses.gpl;  # or whatever license
+    license = licenses.gpl3;  # or whatever license
     # maintainers = [ maintainers.paul ];  # optional
   };
 }
